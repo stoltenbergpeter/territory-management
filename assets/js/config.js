@@ -4,8 +4,8 @@ window.TERRITORY_APP_CONFIG = {
     // GitHub Pages is static hosting. This client ID is public by design.
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
     mockGenesys: true,
-    genesysRegion: "us_east_1",
-    genesysClientId: "",
+    genesysRegion: "us_west_2",
+    genesysClientId: "409225b8-66a3-407c-92ad-fa386bad3e79",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",

@@ -13,9 +13,9 @@ window.TERRITORY_APP_CONFIG = {
 
     defaultDivisionId: "sales-west",
     allowedDivisions: [
-        { id: "sales-west", name: "Sales West" },
+        { id: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13", name: "Home" },
         { id: "sales-east", name: "Sales East" },
-        { id: "enterprise", name: "Enterprise Accounts" }
+        { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" }
     ],
 
     // Optional inventory. These phone numbers remain visible as territory rows

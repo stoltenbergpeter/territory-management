@@ -5,16 +5,16 @@ window.TERRITORY_APP_CONFIG = {
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
     mockGenesys: true,
     // Production is us_east_1; use us_west_2 for the lab division.
-    genesysRegion: "us_east_1",
-    genesysClientId: "",
+    genesysRegion: "us_west_2",
+    genesysClientId: "409225b8-66a3-407c-92ad-fa386bad3e79",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",
 
     defaultDivisionId: "sales-west",
     allowedDivisions: [
-        { id: "sales-west", name: "Sales West" },
-        { id: "sales-east", name: "Sales East" },
+        { id: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13", name: "Home" },
+        { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" },
         { id: "enterprise", name: "Enterprise Accounts" }
     ],
 

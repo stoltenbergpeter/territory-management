@@ -21,23 +21,36 @@
         audit: "territory.assignmentAudit",
         legacyChanges: "territory.changes",
         legacyAudit: "territory.audit",
-        mockUsers: "territory.mockUsers",
+        // v2 fixtures model the extension and Direct Routing DID as separate contacts.
+        mockUsers: "territory.mockUsers.v2",
         selectedDivision: "territory.selectedDivision"
     };
     const AUTH_STATE_KEY = "territory.oauthState";
     const VERIFIER_KEY = "territory.pkceVerifier";
     const RETURN_HASH_KEY = "territory.returnHash";
+    const HIDDEN_URL_PARAMS = new Set([
+        "access_token",
+        "client_secret",
+        "code",
+        "id_token",
+        "password",
+        "refresh_token",
+        "state",
+        "token"
+    ]);
 
     const state = {
         service: null,
         currentUser: null,
         users: [],
+        ownerUsers: [],
         page: 1,
         pageSize: Number(CONFIG.pageSize || 10),
         editingPhone: null,
         changes: normalizeStoredChanges(readJson(STORAGE.changes, readJson(STORAGE.legacyChanges, []))),
         audit: normalizeStoredAudit(readJson(STORAGE.audit, readJson(STORAGE.legacyAudit, []))),
-        applyingDue: false
+        applyingDue: false,
+        urlParams: new Map()
     };
 
     document.addEventListener("DOMContentLoaded", init);
@@ -45,11 +58,15 @@
     async function init() {
         CONFIG.allowedDivisions = Array.isArray(CONFIG.allowedDivisions) ? CONFIG.allowedDivisions : [];
         CONFIG.territoryPhoneNumbers = Array.isArray(CONFIG.territoryPhoneNumbers) ? CONFIG.territoryPhoneNumbers : [];
+        state.urlParams = parseUrlParams();
+        applyUrlViewParam(state.urlParams);
         state.service = CONFIG.mockGenesys ? new MockGenesysService(CONFIG) : new GenesysService(CONFIG);
         initViewSwitcher();
         wireEvents();
-        renderSettings();
         populateDivisionControls();
+        applyUrlParamsToControls(state.urlParams);
+        renderSettings();
+        renderUrlParams(state.urlParams);
         saveChanges();
         writeJson(STORAGE.audit, state.audit);
 
@@ -173,6 +190,122 @@
         }
     }
 
+    function parseUrlParams() {
+        const params = new Map();
+        const searchParams = new URLSearchParams(window.location.search);
+        searchParams.forEach((value, key) => {
+            const normalizedKey = key.trim();
+            if (!normalizedKey) return;
+            if (!params.has(normalizedKey)) params.set(normalizedKey, []);
+            params.get(normalizedKey).push(value);
+        });
+        return params;
+    }
+
+    function applyUrlViewParam(params) {
+        const view = getUrlParam(params, ["view", "tab"]).toLowerCase();
+        const availableViews = new Set(["dashboard", "review", "audit", "settings"]);
+        if (availableViews.has(view)) {
+            window.location.hash = view;
+        }
+    }
+
+    function applyUrlParamsToControls(params) {
+        const division = getUrlParam(params, ["division", "divisionId", "division_id"]);
+        const divisionSelect = document.getElementById("divisionSelect");
+        const divisionOption = findOptionByValue(divisionSelect, division);
+        if (divisionOption) {
+            divisionSelect.value = divisionOption.value;
+        }
+
+        const search = getUrlParam(params, ["search", "q", "phone", "user", "email"]);
+        if (search) {
+            document.getElementById("userSearchInput").value = search;
+        }
+
+        const auditSearch = getUrlParam(params, ["audit", "auditSearch", "audit_search"]);
+        if (auditSearch) {
+            document.getElementById("auditUserFilter").value = auditSearch;
+        }
+
+        const auditStatus = getUrlParam(params, ["status", "auditStatus", "audit_status"]);
+        const auditStatusOption = findOptionByValue(document.getElementById("auditStatusFilter"), auditStatus);
+        if (auditStatusOption) {
+            document.getElementById("auditStatusFilter").value = auditStatusOption.value;
+        }
+    }
+
+    function renderUrlParams(params) {
+        const container = document.getElementById("urlParamsSummary");
+        if (!container) return;
+
+        const allEntries = [...params.entries()];
+        const visibleEntries = allEntries.filter(([key]) => !isHiddenUrlParam(key));
+        const hiddenCount = allEntries.length - visibleEntries.length;
+        const applied = appliedUrlParamSummaries(params);
+        const hiddenNote = hiddenCount
+            ? `<div class="url-hidden-note mt-2">Hidden ${hiddenCount} OAuth or security parameter${hiddenCount === 1 ? "" : "s"} from this display.</div>`
+            : "";
+
+        if (!visibleEntries.length) {
+            container.innerHTML = `
+                <div class="url-empty">No displayable URL parameters found.</div>
+                ${hiddenNote}`;
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="url-param-list">
+                ${visibleEntries.map(([key, values]) => `
+                    <div class="url-param-item">
+                        <span class="url-param-key">${escapeHtml(key)}</span>
+                        <span class="url-param-values">${renderUrlParamValues(values)}</span>
+                    </div>`).join("")}
+            </div>
+            ${applied.length ? `<div class="url-applied mt-3">${applied.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+            ${hiddenNote}`;
+    }
+
+    function renderUrlParamValues(values) {
+        return values.map((value) => `<code>${escapeHtml(value || "(empty)")}</code>`).join("");
+    }
+
+    function appliedUrlParamSummaries(params) {
+        const summaries = [];
+        const view = getUrlParam(params, ["view", "tab"]);
+        const division = getUrlParam(params, ["division", "divisionId", "division_id"]);
+        const search = getUrlParam(params, ["search", "q", "phone", "user", "email"]);
+        const auditSearch = getUrlParam(params, ["audit", "auditSearch", "audit_search"]);
+        const auditStatus = getUrlParam(params, ["status", "auditStatus", "audit_status"]);
+
+        if (view) summaries.push(`View: ${view}`);
+        if (division && findOptionByValue(document.getElementById("divisionSelect"), division)) summaries.push(`Division filter: ${division}`);
+        if (search) summaries.push(`Search: ${search}`);
+        if (auditSearch) summaries.push(`Audit search: ${auditSearch}`);
+        if (auditStatus && findOptionByValue(document.getElementById("auditStatusFilter"), auditStatus)) summaries.push(`Audit status: ${auditStatus}`);
+        return summaries;
+    }
+
+    function getUrlParam(params, names) {
+        const lookup = names.map((name) => name.toLowerCase());
+        for (const [key, values] of params.entries()) {
+            if (lookup.includes(key.toLowerCase())) {
+                return values.find((value) => value !== "") || values[0] || "";
+            }
+        }
+        return "";
+    }
+
+    function findOptionByValue(select, value) {
+        if (!select || !value) return null;
+        return [...select.options].find((option) => option.value.toLowerCase() === String(value).toLowerCase()) || null;
+    }
+
+    function isHiddenUrlParam(key) {
+        const normalized = String(key || "").toLowerCase();
+        return HIDDEN_URL_PARAMS.has(normalized) || normalized.includes("token") || normalized.includes("secret");
+    }
+
     async function loadUsers(force = false) {
         if (!state.currentUser) {
             renderSignedOut();
@@ -190,11 +323,25 @@
         document.getElementById("usersTableBody").innerHTML = `<tr><td colspan="11" class="text-center py-5 text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading assignments...</td></tr>`;
 
         try {
-            const users = await state.service.searchUsersByDivision(divisionId, ["active"]);
-            state.users = users.map((user) => state.service.normalizeUser(user));
+            const ownerDivisionIds = [...new Set([
+                divisionId,
+                ...CONFIG.allowedDivisions.map((division) => division.id).filter(Boolean)
+            ])];
+            const userGroups = await Promise.all(ownerDivisionIds.map((id) => {
+                return state.service.searchUsersByDivision(id, ["active", "inactive"]);
+            }));
+            const ownersById = new Map();
+            userGroups.flat().forEach((user) => {
+                const normalized = state.service.normalizeUser(user);
+                if (normalized.id) ownersById.set(normalized.id, normalized);
+            });
+            state.ownerUsers = [...ownersById.values()];
+            state.users = state.ownerUsers.filter((user) => {
+                return user.division_id === divisionId && (!user.state || user.state.toLowerCase() === "active");
+            });
             state.page = force ? 1 : state.page;
             renderAssignments();
-            showToast(`Loaded ${state.users.length} Genesys users and ${buildAssignments().length} territory phones.`, "success");
+            showToast(`Loaded ${state.users.length} assignable users, checked ${state.ownerUsers.length} owner records, and found ${buildAssignments().length} territory phones.`, "success");
         } catch (error) {
             document.getElementById("usersTableBody").innerHTML = `<tr><td colspan="11" class="text-center py-5 text-danger">${escapeHtml(error.message)}</td></tr>`;
             showToast(error.message, "danger");
@@ -325,6 +472,14 @@
             showToast("The selected user is no longer available. Refresh from Genesys and try again.", "danger");
             return;
         }
+        if (!isE164Phone(assignment.phone)) {
+            showToast("The territory DID must be an E.164 phone number, for example +19165551234.", "danger");
+            return;
+        }
+        if (targetUserId && (!targetUser.extension || !targetUser.has_primary_extension)) {
+            showToast("The selected user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.", "danger");
+            return;
+        }
         if ((targetUser?.id || "") === (assignment.current_user_id || "")) {
             showToast("Choose a different assigned user before staging.", "warning");
             return;
@@ -338,7 +493,7 @@
         };
         Object.assign(change, {
             territory_phone: assignment.phone,
-            territory_extension: assignment.extension || "",
+            territory_extension: targetUser?.extension || assignment.extension || "",
             division_id: assignment.division_id,
             division_name: assignment.division_name,
             old_user_id: assignment.current_user_id || "",
@@ -466,14 +621,21 @@
             change.correlation_id = result.correlationId || "";
             change.applied_at = new Date().toISOString();
             result.updatedUsers.forEach((user) => replaceUser(user));
+            syncChangeVersions(change, result.updatedUsers);
             appendAudit(change, "APPLIED", "Assignment applied to Genesys Cloud.");
             showToast(`Applied ${change.territory_phone}.`, "success");
         } catch (error) {
+            const partialUsers = Array.isArray(error.updatedUsers) ? error.updatedUsers : [];
+            partialUsers.forEach((user) => replaceUser(user));
+            syncChangeVersions(change, partialUsers);
+            const oldOwnerWasCleared = partialUsers.some((user) => user?.id === change.old_user_id);
             change.status = "FAILED";
-            change.message = error.message;
+            change.message = oldOwnerWasCleared
+                ? `${error.message} The previous user was cleared; retry after resolving the error.`
+                : error.message;
             change.correlation_id = error.correlationId || "";
-            appendAudit(change, "FAILED", error.message);
-            showToast(error.message, "danger");
+            appendAudit(change, "FAILED", change.message);
+            showToast(change.message, "danger");
         } finally {
             saveChanges();
             if (rerender) {
@@ -517,19 +679,22 @@
                 });
             });
 
-        state.users.forEach((user) => {
-            if (!user.phone || user.division_id !== divisionId) return;
-            byPhone.set(user.phone, {
-                phone: user.phone,
-                extension: user.extension || byPhone.get(user.phone)?.extension || "",
-                division_id: user.division_id,
-                division_name: user.division_name || divisionName,
+        const ownerUsers = state.ownerUsers.length ? state.ownerUsers : state.users;
+        ownerUsers.forEach((user) => {
+            if (!user.did_phone) return;
+            const configured = byPhone.get(user.did_phone);
+            if (!configured && user.division_id !== divisionId) return;
+            byPhone.set(user.did_phone, {
+                phone: user.did_phone,
+                extension: user.extension || configured?.extension || "",
+                division_id: configured?.division_id || user.division_id,
+                division_name: configured?.division_name || user.division_name || divisionName,
                 current_user_id: user.id,
                 current_user_name: user.name,
                 current_user_email: user.email,
                 current_user_version: user.version,
                 last_synced_at: user.last_synced_at,
-                source: byPhone.has(user.phone) ? "Configured + Genesys" : "Genesys"
+                source: configured ? "Configured + Genesys" : "Genesys"
             });
         });
 
@@ -543,11 +708,36 @@
     function replaceUser(user) {
         const normalized = state.service.normalizeUser(user);
         const index = state.users.findIndex((item) => item.id === normalized.id);
-        if (index >= 0) {
+        const isAssignable = normalized.division_id === selectedDivisionId()
+            && (!normalized.state || normalized.state.toLowerCase() === "active");
+        if (index >= 0 && isAssignable) {
             state.users.splice(index, 1, normalized);
-        } else if (normalized.division_id === selectedDivisionId()) {
+        } else if (index >= 0) {
+            state.users.splice(index, 1);
+        } else if (isAssignable) {
             state.users.push(normalized);
         }
+        const ownerIndex = state.ownerUsers.findIndex((item) => item.id === normalized.id);
+        if (ownerIndex >= 0) {
+            state.ownerUsers.splice(ownerIndex, 1, normalized);
+        } else if (CONFIG.allowedDivisions.some((division) => division.id === normalized.division_id)) {
+            state.ownerUsers.push(normalized);
+        }
+    }
+
+    function upsertUpdatedUser(users, user) {
+        if (!user?.id) return;
+        const index = users.findIndex((item) => item.id === user.id);
+        if (index >= 0) users.splice(index, 1, user);
+        else users.push(user);
+    }
+
+    function syncChangeVersions(change, users) {
+        users.forEach((user) => {
+            if (user?.version == null) return;
+            if (user.id === change.old_user_id) change.old_user_version = String(user.version);
+            if (user.id === change.new_user_id) change.new_user_version = String(user.version);
+        });
     }
 
     function renderAudit() {
@@ -809,7 +999,7 @@
                 const body = {
                     pageSize,
                     pageNumber,
-                    sortOrder: "ASC",
+                    enforcePermissions: true,
                     query: [
                         { fields: ["divisionId"], value: divisionId, type: "EXACT" }
                     ]
@@ -817,18 +1007,24 @@
                 const { data } = await this.request("POST", "/api/v2/users/search", body);
                 const page = data.results || data.entities || [];
                 users.push(...page.filter((user) => {
-                    const normalized = this.normalizeUser(user);
-                    return normalized.division_id === divisionId && (!states.length || states.includes((normalized.state || "").toLowerCase()));
+                    const userDivisionId = user.division?.id || user.divisionId || "";
+                    const userState = String(user.state || "").toLowerCase();
+                    return (!userDivisionId || userDivisionId === divisionId)
+                        && (!states.length || !userState || states.includes(userState));
                 }));
                 const total = Number(data.total || data.totalHits || 0);
-                if (page.length < pageSize || (total && users.length >= total)) break;
+                const pageCount = Number(data.pageCount || 0);
+                const responsePageNumber = Number(data.pageNumber || pageNumber);
+                if (pageCount
+                    ? responsePageNumber >= pageCount
+                    : page.length < pageSize || (total && users.length >= total)) break;
                 pageNumber += 1;
             }
             return users;
         }
 
         async getUser(userId) {
-            const { data } = await this.request("GET", `/api/v2/users/${encodeURIComponent(userId)}?expand=routingStatus,presence`);
+            const { data } = await this.request("GET", `/api/v2/users/${encodeURIComponent(userId)}`);
             return data;
         }
 
@@ -836,47 +1032,60 @@
             const updatedUsers = [];
             let correlationId = "";
 
-            if (change.old_user_id && change.old_user_id !== change.new_user_id) {
-                const oldLatest = await this.getUser(change.old_user_id);
-                const oldBefore = this.normalizeUser(oldLatest);
-                if (change.old_user_version && oldBefore.version && String(change.old_user_version) !== String(oldBefore.version)) {
-                    throw new Error("The currently assigned user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+            try {
+                if (!isE164Phone(change.territory_phone)) {
+                    throw new Error("The territory DID must be an E.164 phone number, for example +19165551234.");
                 }
-                if (oldBefore.phone === change.territory_phone || oldBefore.extension === change.territory_extension) {
-                    const patch = this.buildClearPhonePatch(oldLatest, change.territory_phone, change.territory_extension);
-                    const { data, correlationId: clearCorrelationId } = await this.request("PATCH", `/api/v2/users/${encodeURIComponent(change.old_user_id)}`, patch);
+                // Fetch and validate both versions before releasing a DID from its owner.
+                const oldLatest = change.old_user_id ? await this.getUser(change.old_user_id) : null;
+                const newLatest = change.new_user_id ? await this.getUser(change.new_user_id) : null;
+                if (oldLatest) {
+                    const oldBefore = this.normalizeUser(oldLatest);
+                    if (change.old_user_version && oldBefore.version && String(change.old_user_version) !== String(oldBefore.version)) {
+                        throw new Error("The currently assigned user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                    }
+                }
+                if (newLatest) {
+                    const newBefore = this.normalizeUser(newLatest);
+                    if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
+                        throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                    }
+                    const targetContacts = this.extractPhoneAndExtension(newLatest);
+                    if (!targetContacts.extension || !targetContacts.hasPrimaryExtension) {
+                        throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+                    }
+                }
+
+                if (oldLatest && change.old_user_id !== change.new_user_id && hasDirectRoutingDid(oldLatest, change.territory_phone)) {
+                    const patch = this.buildClearPhonePatch(oldLatest, change.territory_phone);
+                    const { data: clearedUser, correlationId: clearCorrelationId } = await this.request("PATCH", `/api/v2/users/${encodeURIComponent(change.old_user_id)}`, patch);
                     correlationId = clearCorrelationId || correlationId;
-                    updatedUsers.push(data);
+                    upsertUpdatedUser(updatedUsers, clearedUser);
+                    const verifiedOldUser = await this.getUser(change.old_user_id);
+                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)) {
+                        throw new Error("Genesys did not remove the Direct Routing DID from the previous user. Refresh and try again.");
+                    }
+                    upsertUpdatedUser(updatedUsers, verifiedOldUser);
                 }
-            }
 
-            if (change.new_user_id) {
-                const newLatest = await this.getUser(change.new_user_id);
-                const newBefore = this.normalizeUser(newLatest);
-                if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
-                    throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                if (newLatest) {
+                    const patch = this.buildAssignPatch(newLatest, change.territory_phone);
+                    const { data: assignedUser, correlationId: assignCorrelationId } = await this.request("PATCH", `/api/v2/users/${encodeURIComponent(change.new_user_id)}`, patch);
+                    correlationId = assignCorrelationId || correlationId;
+                    upsertUpdatedUser(updatedUsers, assignedUser);
+                    const verifiedNewUser = await this.getUser(change.new_user_id);
+                    if (!hasDirectRoutingDid(verifiedNewUser, change.territory_phone)) {
+                        throw new Error("Genesys did not verify the Direct Routing DID on the assigned user. Refresh and try again.");
+                    }
+                    upsertUpdatedUser(updatedUsers, verifiedNewUser);
                 }
-                const availability = await this.validateExtensionAvailable(change.territory_extension, change.division_id, change.new_user_id, [change.old_user_id]);
-                if (!availability.valid) throw new Error(availability.message);
-                const patch = this.buildAssignPatch(newLatest, change.territory_phone, change.territory_extension);
-                const { data, correlationId: assignCorrelationId } = await this.request("PATCH", `/api/v2/users/${encodeURIComponent(change.new_user_id)}`, patch);
-                correlationId = assignCorrelationId || correlationId;
-                updatedUsers.push(data);
-            }
 
-            return { updatedUsers, correlationId };
-        }
-
-        async validateExtensionAvailable(extension, divisionId, currentUserId, allowedUserIds = []) {
-            const validation = this.validateExtension(extension);
-            if (!validation.valid || !extension) return validation;
-            const users = await this.searchUsersByDivision(divisionId, ["active", "inactive"]);
-            const allowed = new Set([currentUserId, ...allowedUserIds].filter(Boolean));
-            const duplicate = users.map((user) => this.normalizeUser(user)).find((user) => !allowed.has(user.id) && user.extension === String(extension));
-            if (duplicate) {
-                return { valid: false, message: `Extension ${extension} is already assigned to ${duplicate.name}.` };
+                return { updatedUsers, correlationId };
+            } catch (error) {
+                error.updatedUsers = updatedUsers;
+                error.correlationId = error.correlationId || correlationId;
+                throw error;
             }
-            return { valid: true };
         }
 
         async request(method, path, body = null) {
@@ -939,8 +1148,9 @@
                 version: user.version == null ? "" : String(user.version),
                 addresses: clone(user.addresses || []),
                 primaryContactInfo: clone(user.primaryContactInfo || []),
-                phone: phoneInfo.phone,
+                did_phone: phoneInfo.didPhone,
                 extension: phoneInfo.extension,
+                has_primary_extension: phoneInfo.hasPrimaryExtension,
                 last_synced_at: new Date().toISOString()
             };
         }
@@ -948,59 +1158,56 @@
         extractPhoneAndExtension(user) {
             const primary = Array.isArray(user.primaryContactInfo) ? user.primaryContactInfo : [];
             const addresses = Array.isArray(user.addresses) ? user.addresses : [];
-            const candidates = [
-                ...primary.filter(isPhoneEntry),
-                ...addresses.filter((entry) => isPhoneEntry(entry) && ["work", "primary", ""].includes(entryType(entry))),
-                ...addresses.filter(isPhoneEntry)
-            ];
-            const entry = candidates[0] || {};
-            const phone = entry.address || entry.value || entry.display || entry.phoneNumber || "";
-            const extension = entry.extension || entry.extensionNumber || "";
-            return { phone: phone || "", extension: extension ? String(extension) : "" };
-        }
-
-        validateExtension(extension) {
-            if (!extension) return { valid: true };
-            const value = String(extension).trim();
-            if (!/^\d+$/.test(value)) {
-                return { valid: false, message: "Extension must contain numbers only." };
-            }
-            const min = Number(CONFIG.minExtensionLength || 2);
-            const max = Number(CONFIG.maxExtensionLength || 10);
-            if (value.length < min || value.length > max) {
-                return { valid: false, message: `Extension must be ${min}-${max} digits.` };
-            }
-            return { valid: true };
-        }
-
-        buildAssignPatch(existingUser, phone, extension) {
-            const addresses = clone(existingUser.addresses || []);
-            const primaryContactInfo = clone(existingUser.primaryContactInfo || []);
-            let addressPhone = findPhoneEntry(addresses);
-            if (!addressPhone) {
-                addressPhone = { mediaType: "PHONE", type: "WORK" };
-                addresses.push(addressPhone);
-            }
-            applyDirectRoutingFields(addressPhone, phone, extension);
-
-            let primaryPhone = findPhoneEntry(primaryContactInfo);
-            if (!primaryPhone) {
-                primaryPhone = { mediaType: "PHONE", type: addressPhone.type || "WORK" };
-                primaryContactInfo.push(primaryPhone);
-            }
-            applyDirectRoutingFields(primaryPhone, phone, extension);
-
-            return { addresses, primaryContactInfo };
-        }
-
-        buildClearPhonePatch(existingUser, phone, extension) {
-            const shouldRemove = (entry) => {
-                if (!isPhoneEntry(entry)) return false;
-                return entry.address === phone || String(entry.extension || "") === String(extension || "");
-            };
+            const extensionContact = findExtensionContact(addresses, ["work"]);
+            const extension = contactExtension(extensionContact);
+            const primaryExtensionContact = extension
+                ? findExtensionContact(primary, ["primary"], extension)
+                : null;
+            const didContact = findDirectRoutingDidContact(addresses);
             return {
-                addresses: clone(existingUser.addresses || []).filter((entry) => !shouldRemove(entry)),
-                primaryContactInfo: clone(existingUser.primaryContactInfo || []).filter((entry) => !shouldRemove(entry))
+                didPhone: contactAddress(didContact),
+                extension,
+                hasPrimaryExtension: Boolean(primaryExtensionContact)
+            };
+        }
+
+        buildAssignPatch(existingUser, phone) {
+            const extensionInfo = this.extractPhoneAndExtension(existingUser);
+            if (!extensionInfo.extension || !extensionInfo.hasPrimaryExtension) {
+                throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+            }
+
+            let addresses = clone(existingUser.addresses || []);
+            const existingDids = addresses.filter(isDirectRoutingDidContact);
+            let didContact = existingDids.find((entry) => samePhone(contactAddress(entry), phone)) || existingDids[0];
+            if (didContact) {
+                // Keep one Direct Routing WORK2 entry and replace its DID instead of adding another.
+                addresses = addresses.filter((entry) => entry === didContact || !isDirectRoutingDidContact(entry));
+            } else {
+                didContact = { mediaType: "PHONE", type: "WORK2", integration: phoneIntegration() };
+                addresses.push(didContact);
+            }
+            applyDirectRoutingDidFields(didContact, phone);
+
+            return this.buildContactPatch(existingUser, addresses);
+        }
+
+        buildClearPhonePatch(existingUser, phone) {
+            const addresses = clone(existingUser.addresses || []).filter((entry) => {
+                return !isDirectRoutingDidContact(entry) || !samePhone(contactAddress(entry), phone);
+            });
+            return this.buildContactPatch(existingUser, addresses);
+        }
+
+        buildContactPatch(existingUser, addresses) {
+            if (existingUser?.version == null || existingUser.version === "") {
+                throw new Error("Genesys did not return the user's current version. Refresh and try again.");
+            }
+            // Browser REST uses camelCase; the Python SDK equivalent is UpdateUser.primary_contact_info.
+            return {
+                version: existingUser.version,
+                addresses,
+                primaryContactInfo: clone(existingUser.primaryContactInfo || [])
             };
         }
     }
@@ -1049,56 +1256,69 @@
             return clone(user);
         }
 
-        async validateExtensionAvailable(extension, divisionId, currentUserId, allowedUserIds = []) {
-            const validation = this.validateExtension(extension);
-            if (!validation.valid || !extension) return validation;
-            const allowed = new Set([currentUserId, ...allowedUserIds].filter(Boolean));
-            const duplicate = Object.values(this.users)
-                .map((user) => this.normalizeUser(user))
-                .find((user) => user.division_id === divisionId && !allowed.has(user.id) && user.extension === String(extension));
-            if (duplicate) {
-                return { valid: false, message: `Extension ${extension} is already assigned to ${duplicate.name}.` };
-            }
-            return { valid: true };
-        }
-
         async applyTerritoryAssignment(change) {
             const updatedUsers = [];
-            if (change.old_user_id && change.old_user_id !== change.new_user_id) {
-                const oldLatest = await this.getUser(change.old_user_id);
-                const oldBefore = this.normalizeUser(oldLatest);
-                if (change.old_user_version && oldBefore.version && String(change.old_user_version) !== String(oldBefore.version)) {
-                    throw new Error("The currently assigned user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+            try {
+                if (!isE164Phone(change.territory_phone)) {
+                    throw new Error("The territory DID must be an E.164 phone number, for example +19165551234.");
                 }
-                const oldUpdated = {
-                    ...oldLatest,
-                    ...this.buildClearPhonePatch(oldLatest, change.territory_phone, change.territory_extension),
-                    version: Number(oldLatest.version || 0) + 1
-                };
-                this.users[change.old_user_id] = oldUpdated;
-                updatedUsers.push(clone(oldUpdated));
-            }
-
-            if (change.new_user_id) {
-                const newLatest = await this.getUser(change.new_user_id);
-                const newBefore = this.normalizeUser(newLatest);
-                if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
-                    throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                const oldLatest = change.old_user_id ? await this.getUser(change.old_user_id) : null;
+                const newLatest = change.new_user_id ? await this.getUser(change.new_user_id) : null;
+                if (oldLatest) {
+                    const oldBefore = this.normalizeUser(oldLatest);
+                    if (change.old_user_version && oldBefore.version && String(change.old_user_version) !== String(oldBefore.version)) {
+                        throw new Error("The currently assigned user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                    }
                 }
-                const availability = await this.validateExtensionAvailable(change.territory_extension, change.division_id, change.new_user_id, [change.old_user_id]);
-                if (!availability.valid) throw new Error(availability.message);
-                const newUpdated = {
-                    ...newLatest,
-                    ...this.buildAssignPatch(newLatest, change.territory_phone, change.territory_extension),
-                    version: Number(newLatest.version || 0) + 1
-                };
-                this.users[change.new_user_id] = newUpdated;
-                updatedUsers.push(clone(newUpdated));
-            }
+                if (newLatest) {
+                    const newBefore = this.normalizeUser(newLatest);
+                    if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
+                        throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
+                    }
+                    const targetContacts = this.extractPhoneAndExtension(newLatest);
+                    if (!targetContacts.extension || !targetContacts.hasPrimaryExtension) {
+                        throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+                    }
+                }
 
-            writeJson(STORAGE.mockUsers, this.users);
-            await delay(180);
-            return { updatedUsers, correlationId: `mock-${crypto.randomUUID()}` };
+                if (oldLatest && change.old_user_id !== change.new_user_id && hasDirectRoutingDid(oldLatest, change.territory_phone)) {
+                    const oldUpdated = {
+                        ...oldLatest,
+                        ...this.buildClearPhonePatch(oldLatest, change.territory_phone),
+                        version: Number(oldLatest.version || 0) + 1
+                    };
+                    this.users[change.old_user_id] = oldUpdated;
+                    upsertUpdatedUser(updatedUsers, oldUpdated);
+                    const verifiedOldUser = await this.getUser(change.old_user_id);
+                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)) {
+                        throw new Error("Mock Genesys did not remove the Direct Routing DID from the previous user.");
+                    }
+                    upsertUpdatedUser(updatedUsers, verifiedOldUser);
+                }
+
+                if (newLatest) {
+                    const newUpdated = {
+                        ...newLatest,
+                        ...this.buildAssignPatch(newLatest, change.territory_phone),
+                        version: Number(newLatest.version || 0) + 1
+                    };
+                    this.users[change.new_user_id] = newUpdated;
+                    upsertUpdatedUser(updatedUsers, newUpdated);
+                    const verifiedNewUser = await this.getUser(change.new_user_id);
+                    if (!hasDirectRoutingDid(verifiedNewUser, change.territory_phone)) {
+                        throw new Error("Mock Genesys did not verify the Direct Routing DID on the assigned user.");
+                    }
+                    upsertUpdatedUser(updatedUsers, verifiedNewUser);
+                }
+
+                writeJson(STORAGE.mockUsers, this.users);
+                await delay(180);
+                return { updatedUsers, correlationId: `mock-${crypto.randomUUID()}` };
+            } catch (error) {
+                writeJson(STORAGE.mockUsers, this.users);
+                error.updatedUsers = updatedUsers;
+                throw error;
+            }
         }
     }
 
@@ -1178,20 +1398,61 @@
         return String(entry?.type || "").toLowerCase();
     }
 
-    function findPhoneEntry(entries) {
-        return entries.find((entry) => isPhoneEntry(entry) && ["work", "primary", ""].includes(entryType(entry))) || entries.find(isPhoneEntry) || null;
+    function contactAddress(entry) {
+        return String(entry?.address || entry?.value || entry?.phoneNumber || "").trim();
     }
 
-    function applyDirectRoutingFields(entry, phone, extension) {
+    function contactExtension(entry) {
+        const extension = entry?.extension || entry?.extensionNumber || "";
+        return extension ? String(extension).trim() : "";
+    }
+
+    function findExtensionContact(entries, acceptedTypes, expectedExtension = "") {
+        return entries.find((entry) => {
+            return isPhoneEntry(entry)
+                && contactExtension(entry)
+                && !isE164Phone(contactAddress(entry))
+                && (!acceptedTypes.length || acceptedTypes.includes(entryType(entry)))
+                && (!expectedExtension || contactExtension(entry) === expectedExtension);
+        }) || null;
+    }
+
+    function isDirectRoutingDidContact(entry) {
+        return isPhoneEntry(entry)
+            && entryType(entry) === "work2"
+            && String(entry?.integration || "").toLowerCase() === "directrouting";
+    }
+
+    function findDirectRoutingDidContact(entries) {
+        return entries.find(isDirectRoutingDidContact) || null;
+    }
+
+    function hasDirectRoutingDid(user, phone) {
+        return (Array.isArray(user?.addresses) ? user.addresses : []).some((entry) => {
+            return isDirectRoutingDidContact(entry) && samePhone(contactAddress(entry), phone);
+        });
+    }
+
+    function samePhone(left, right) {
+        return String(left || "").trim() === String(right || "").trim();
+    }
+
+    function isE164Phone(phone) {
+        return /^\+[1-9]\d{1,14}$/.test(String(phone || "").trim());
+    }
+
+    function applyDirectRoutingDidFields(entry, phone) {
         const normalizedPhone = String(phone || "").trim();
         entry.address = normalizedPhone;
         entry.display = formatPhoneDisplay(normalizedPhone);
         entry.mediaType = "PHONE";
-        entry.type = "WORK";
+        entry.type = "WORK2";
         entry.countryCode = phoneCountryCode();
         entry.integration = phoneIntegration();
-        if (extension) entry.extension = String(extension).trim();
-        else delete entry.extension;
+        delete entry.extension;
+        delete entry.extensionNumber;
+        delete entry.media_type;
+        delete entry.country_code;
     }
 
     function formatPhoneDisplay(phone) {
@@ -1207,7 +1468,7 @@
     }
 
     function phoneIntegration() {
-        return CONFIG.phoneIntegration || "directrouting";
+        return "directrouting";
     }
 
     function saveChanges() {
@@ -1390,7 +1651,7 @@
         return Object.fromEntries(users.map((user) => [user.id, user]));
     }
 
-    function mockUser(id, name, email, divisionId, divisionName, phone, extension, version) {
+    function mockUser(id, name, email, divisionId, divisionName, didPhone, extension, version) {
         return {
             id,
             name,
@@ -1400,11 +1661,19 @@
             version,
             addresses: [
                 { mediaType: "EMAIL", type: "WORK", address: email },
-                { mediaType: "PHONE", type: "WORK", address: phone, extension }
+                { display: extension, mediaType: "PHONE", type: "WORK", extension },
+                {
+                    address: didPhone,
+                    display: formatPhoneDisplay(didPhone),
+                    mediaType: "PHONE",
+                    type: "WORK2",
+                    countryCode: "US",
+                    integration: "directrouting"
+                }
             ],
             primaryContactInfo: [
                 { mediaType: "EMAIL", type: "WORK", address: email },
-                { mediaType: "PHONE", type: "WORK", address: phone, extension }
+                { display: extension, mediaType: "PHONE", type: "PRIMARY", extension }
             ]
         };
     }

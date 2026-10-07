@@ -57,6 +57,22 @@
             </div>
         </section>
 
+        <section class="card app-card url-params-card mb-4">
+            <div class="card-body">
+                <div class="d-flex flex-column flex-xl-row justify-content-between gap-3">
+                    <div>
+                        <h2 class="h5 mb-1">URL Parameters</h2>
+                        <p class="text-muted mb-0">Query string values from the page URL appear here and can prefill simple dashboard filters.</p>
+                    </div>
+                    <div class="url-example">
+                        <span class="text-muted">Try:</span>
+                        <code>?division=sales-west&amp;search=avery&amp;note=renewal</code>
+                    </div>
+                </div>
+                <div id="urlParamsSummary" class="url-params-summary mt-3" aria-live="polite"></div>
+            </div>
+        </section>
+
         <section class="card app-card mb-4">
             <div class="card-body">
                 <div class="row g-3 align-items-end">
@@ -87,7 +103,7 @@
                         <thead>
                         <tr>
                             <th>Territory Phone</th>
-                            <th>Extension</th>
+                            <th>Primary Extension</th>
                             <th>Assigned User</th>
                             <th>Genesys User ID</th>
                             <th>Division</th>

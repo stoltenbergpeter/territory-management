@@ -14,10 +14,33 @@ This version is intentionally static: `index.html`, `assets/css/styles.css`, `as
 - Search by phone, extension, assigned user, email, and Genesys user ID.
 - Inline assignment edit and local review queue before changes go live.
 - Scheduled effective date/time for each assignment.
-- Safe update flow that fetches the latest Genesys users, checks versions, validates extension uniqueness, clears the previous assignee when needed, and patches only `addresses` and `primaryContactInfo`.
-- Direct Routing phone updates include `integration: "directrouting"`, `mediaType: "PHONE"`, `type: "WORK"`, `countryCode`, and a formatted `display` value.
+- Safe update flow that preflights the current owner and target versions, requires matching target extension contacts, removes the previous assignee's matching DID when needed, and verifies each change with a final GET.
+- The internal extension remains the user's phone `WORK` address and primary phone contact; a Direct Routing DID is a separate phone `WORK2` address with `integration: "directrouting"`.
+- Updates preserve email addresses, the primary extension, and other unrelated contact entries.
 - Mock mode for testing without Genesys credentials.
 - Local browser audit log and CSV export.
+- URL query parameters displayed on the dashboard, with a few known params wired into filters.
+
+## URL Parameters
+
+The page reads query string parameters from the URL and displays them in the **URL Parameters** panel on the dashboard. Any non-sensitive parameter is shown, so links can carry lightweight context like a note, source, campaign, or customer name.
+
+Known parameters also drive the UI:
+
+- `division`, `divisionId`, or `division_id`: preselects a configured division.
+- `search`, `q`, `phone`, `user`, or `email`: prefills the dashboard search box.
+- `view` or `tab`: opens `dashboard`, `review`, `audit`, or `settings`.
+- `audit`, `auditSearch`, or `audit_search`: prefills the audit log search box.
+- `status`, `auditStatus`, or `audit_status`: preselects an audit status such as `STAGED` or `APPLIED`.
+
+Examples:
+
+```text
+https://your-org.github.io/territory-management/?division=sales-west&search=avery&note=renewal
+https://your-org.github.io/territory-management/?view=audit&audit=4101&status=APPLIED
+```
+
+OAuth and security callback fields such as `code`, `state`, and token-like parameters are intentionally hidden from the display.
 
 ## Important Limits
 
@@ -30,7 +53,9 @@ GitHub Pages cannot run backend code. That means:
 - The local review queue, schedule queue, and audit log are stored in the user's browser only.
 - Scheduled changes are applied only when the app is open at or after the effective time.
 
-For a shared approval workflow, reliable unattended scheduling, durable audit retention, centralized role mapping, or extension pool validation beyond duplicate checks, add a small backend later.
+For a shared approval workflow, reliable unattended scheduling, durable audit retention, or centralized role mapping, add a small backend later.
+
+The supplied Genesys Cloud Python SDK reference uses Client Credentials for trusted server-side code. That flow requires a client secret and must not be moved into this browser app. This app continues to use Authorization Code with PKCE and the signed-in user's permissions.
 
 ## Configure Genesys OAuth
 
@@ -61,7 +86,6 @@ window.TERRITORY_APP_CONFIG = {
     genesysClientId: "YOUR_PUBLIC_PKCE_CLIENT_ID",
     redirectUri: "https://your-org.github.io/territory-management/",
     phoneCountryCode: "US",
-    phoneIntegration: "directrouting",
     defaultDivisionId: "YOUR_DIVISION_ID",
     allowedDivisions: [
         { id: "YOUR_DIVISION_ID", name: "Sales" }
@@ -74,24 +98,67 @@ window.TERRITORY_APP_CONFIG = {
 
 The client ID is public in a browser app. Never add a client secret.
 
-`territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys.
+`territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys. Its optional `extension` value is a display fallback for an unassigned DID; assigning a DID preserves the selected user's existing extension.
+
+The app searches active and inactive users in every configured allowed division to locate an existing DID owner before reassignment. User searches set `enforcePermissions: true`; a DID held outside the configured or authorized scope must be cleared by an administrator before it can be reassigned.
+
+Set `genesysRegion` before signing in or making API requests. Production uses `us_east_1`; the lab division uses `us_west_2`.
+
+## Python SDK Reference and Browser REST Payloads
+
+The accompanying quick reference documents the Python SDK. Its models use Python property names such as `page_size`, `page_number`, `primary_contact_info`, `media_type`, and `country_code`.
+
+This app calls the Genesys Cloud REST API directly from browser JavaScript, so its JSON payloads must use the REST camel-case names: `pageSize`, `pageNumber`, `primaryContactInfo`, `mediaType`, and `countryCode`. It does not create a `PureCloudPlatformClientV2` client.
+
+The reference's call-forwarding operations are not part of this assignment-only application. A call-forwarding feature would need its own UI and REST calls for `GET` and `PATCH /api/v2/users/{userId}/callforwarding`.
 
 ## Direct Routing Phone Payload
 
-When applying an assignment, the app writes the assigned user's work phone as a Direct Routing phone entry:
+When applying an assignment, retain the user's internal extension as the `PHONE` / `WORK` address. Retain the primary extension as the `PHONE` / `PRIMARY` entry in `primaryContactInfo`. The DID is a separate `PHONE` / `WORK2` Direct Routing address; replace the existing Direct Routing `WORK2` entry instead of adding another one.
 
 ```json
 {
   "address": "+19164636173",
   "display": "+1 916-463-6173",
   "mediaType": "PHONE",
-  "type": "WORK",
+  "type": "WORK2",
   "countryCode": "US",
   "integration": "directrouting"
 }
 ```
 
-The app applies the same phone metadata to `addresses` and `primaryContactInfo` so Genesys remains consistent.
+For example, the extension contacts remain separate from the DID:
+
+```json
+{
+  "addresses": [
+    {
+      "display": "1234567",
+      "mediaType": "PHONE",
+      "type": "WORK",
+      "extension": "1234567"
+    },
+    {
+      "address": "+19164636173",
+      "display": "+1 916-463-6173",
+      "mediaType": "PHONE",
+      "type": "WORK2",
+      "countryCode": "US",
+      "integration": "directrouting"
+    }
+  ],
+  "primaryContactInfo": [
+    {
+      "display": "1234567",
+      "mediaType": "PHONE",
+      "type": "PRIMARY",
+      "extension": "1234567"
+    }
+  ]
+}
+```
+
+Existing email addresses, primary email contacts, and unrelated contacts must remain in their respective lists. Use the current `version` returned by `GET /api/v2/users/{userId}` in the `PATCH /api/v2/users/{userId}` payload, then issue a final GET to verify the assignment. When moving a DID, remove it from the old user before adding it to the new user.
 
 ## Run Locally
 

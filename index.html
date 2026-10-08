@@ -250,16 +250,53 @@
             </div>
         </section>
 
+        <section class="card app-card mb-4">
+            <div class="card-body">
+                <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-start gap-3">
+                    <div>
+                        <h2 class="h5 mb-1">Browser-Local Territory Inventory</h2>
+                        <p class="text-muted mb-0">Add an already-provisioned Direct Routing DID so it is available to assign from this browser.</p>
+                    </div>
+                    <button class="btn btn-outline-secondary" id="exportLocalTerritoryPhonesButton" type="button"><i class="bi bi-download"></i> Export for Deployment</button>
+                </div>
+
+                <div class="alert alert-warning small mt-3 mb-3" role="note">
+                    This does not create a Genesys phone number or extension. The display extension is only shown while the territory DID is unassigned; assigning a DID preserves the selected user's existing Genesys extension.
+                </div>
+
+                <form class="row g-3 align-items-end" id="territoryPhoneForm">
+                    <div class="col-12 col-lg-4">
+                        <label class="form-label" for="territoryPhoneDivision">Division</label>
+                        <select class="form-select" id="territoryPhoneDivision" required></select>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                        <label class="form-label" for="territoryPhoneInput">Territory DID (E.164)</label>
+                        <input class="form-control" id="territoryPhoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="+19165551234" pattern="\+[1-9][0-9]{1,14}" required>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <label class="form-label" for="territoryExtensionInput">Display Extension <span class="text-muted fw-normal">(optional)</span></label>
+                        <input class="form-control" id="territoryExtensionInput" type="text" maxlength="32" autocomplete="off" placeholder="4567">
+                    </div>
+                    <div class="col-12 col-lg-2 d-grid">
+                        <button class="btn btn-primary" type="submit"><i class="bi bi-plus-lg"></i> Add Territory Phone</button>
+                    </div>
+                </form>
+                <p class="form-text mb-0 mt-2">Browser-local entries are not shared with colleagues. Export them, merge them into <code>assets/js/config.js</code>, and redeploy to make them authoritative and shared.</p>
+            </div>
+        </section>
+
         <section class="card app-card">
             <div class="card-body">
-                <h2 class="h5 mb-3">Allowed Divisions and Territory Phones</h2>
+                <h2 class="h5 mb-3">Allowed Divisions and Territory Phone Inventory</h2>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
                         <thead>
                         <tr>
                             <th>Item</th>
-                            <th>ID / Extension</th>
+                            <th>ID / Display Extension</th>
                             <th>Scope</th>
+                            <th>Source</th>
+                            <th class="text-end">Actions</th>
                         </tr>
                         </thead>
                         <tbody id="settingsDivisionsBody"></tbody>

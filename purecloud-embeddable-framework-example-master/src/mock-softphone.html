@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Local Embeddable Framework Mock</title>
+    <link rel="stylesheet" href="/css/mock-softphone.css">
+    <script defer src="/scripts/mock-softphone.js"></script>
+</head>
+<body>
+    <main class="phone" aria-label="Local mock softphone">
+        <header class="phone-header">
+            <div>
+                <p class="eyebrow">LOCAL SIMULATION</p>
+                <h1>Embeddable Client</h1>
+            </div>
+            <span id="connectionIndicator" class="indicator">Ready</span>
+        </header>
+
+        <section class="agent-card" aria-label="Agent status">
+            <div class="avatar">JD</div>
+            <div>
+                <strong>Jordan Doe</strong>
+                <p id="agentStatus">Available</p>
+            </div>
+            <span id="audioIndicator" class="audio-indicator" title="Audio notifications enabled">♪</span>
+        </section>
+
+        <section class="call-card" aria-live="polite">
+            <p class="label">CURRENT INTERACTION</p>
+            <h2 id="callStatus">No active call</h2>
+            <p id="callDetail">Use a control below or Click-to-Dial in the host page.</p>
+            <div class="call-meta">
+                <span id="callDirection">Waiting</span>
+                <span id="callTimer">00:00</span>
+            </div>
+        </section>
+
+        <section class="controls" aria-label="Mock controls">
+            <button id="simulateInbound" class="primary" type="button">Simulate inbound call</button>
+            <button id="requestSearch" type="button">Request contact search</button>
+            <button id="openCallLog" type="button">Open call log</button>
+        </section>
+
+        <section class="view-card" aria-label="Current client view">
+            <span>View</span>
+            <strong id="currentView">interactionList</strong>
+        </section>
+
+        <section class="results" aria-label="Contact search results">
+            <div class="section-heading">
+                <span>CONTACT SEARCH</span>
+                <span id="searchSummary">No search requested</span>
+            </div>
+            <ul id="contactResults">
+                <li class="empty">Results from the host app will appear here.</li>
+            </ul>
+        </section>
+
+        <section class="activity" aria-label="Activity log">
+            <div class="section-heading">
+                <span>ACTIVITY</span>
+                <button id="clearActivity" class="text-button" type="button">Clear</button>
+            </div>
+            <ol id="activityLog"></ol>
+        </section>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+</body>
+</html>

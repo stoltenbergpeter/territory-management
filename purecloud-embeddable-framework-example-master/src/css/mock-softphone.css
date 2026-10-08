@@ -1,0 +1,284 @@
+:root {
+    color-scheme: light;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #14213d;
+    background: #f4f7fb;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-width: 280px;
+    background: #f4f7fb;
+}
+
+button {
+    font: inherit;
+}
+
+.phone {
+    min-height: 100vh;
+    padding: 16px;
+    background: linear-gradient(160deg, #ffffff 0%, #f4f7fb 56%, #e8f1ff 100%);
+}
+
+.phone-header,
+.agent-card,
+.call-meta,
+.section-heading,
+.view-card {
+    display: flex;
+    align-items: center;
+}
+
+.phone-header {
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.eyebrow,
+.label,
+.section-heading > span:first-child {
+    margin: 0 0 3px;
+    color: #5e6c84;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .09em;
+}
+
+.phone-header h1 {
+    margin: 0;
+    color: #172b4d;
+    font-size: 18px;
+    line-height: 1.2;
+}
+
+.indicator {
+    padding: 5px 8px;
+    border-radius: 999px;
+    color: #0b6b3a;
+    background: #dff7e8;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.agent-card,
+.call-card,
+.results,
+.activity,
+.view-card {
+    border: 1px solid #dce4f0;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .92);
+    box-shadow: 0 5px 16px rgba(20, 33, 61, .06);
+}
+
+.agent-card {
+    gap: 10px;
+    padding: 12px;
+}
+
+.avatar {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border-radius: 50%;
+    color: #fff;
+    background: #246bce;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.agent-card strong {
+    display: block;
+    font-size: 13px;
+}
+
+.agent-card p {
+    margin: 2px 0 0;
+    color: #0b6b3a;
+    font-size: 12px;
+}
+
+.audio-indicator {
+    margin-left: auto;
+    color: #246bce;
+    font-size: 20px;
+}
+
+.call-card {
+    margin-top: 12px;
+    padding: 14px;
+    background: linear-gradient(140deg, #eef6ff, #ffffff);
+}
+
+.call-card h2 {
+    margin: 2px 0 5px;
+    color: #172b4d;
+    font-size: 16px;
+}
+
+.call-card > p:not(.label) {
+    min-height: 32px;
+    margin: 0;
+    color: #526174;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.call-meta {
+    justify-content: space-between;
+    margin-top: 12px;
+    color: #526174;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+
+.controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.controls button {
+    min-height: 35px;
+    padding: 7px 8px;
+    border: 1px solid #b9c9de;
+    border-radius: 8px;
+    color: #1f4d88;
+    background: #fff;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.controls button:hover,
+.controls button:focus-visible {
+    border-color: #246bce;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(36, 107, 206, .15);
+}
+
+.controls .primary {
+    grid-column: span 2;
+    border-color: #246bce;
+    color: #fff;
+    background: #246bce;
+}
+
+.view-card {
+    justify-content: space-between;
+    padding: 10px 12px;
+    color: #5e6c84;
+    font-size: 12px;
+}
+
+.view-card strong {
+    color: #172b4d;
+}
+
+.results,
+.activity {
+    margin-top: 12px;
+    padding: 11px 12px;
+}
+
+.section-heading {
+    justify-content: space-between;
+    gap: 8px;
+    color: #5e6c84;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.section-heading > span:last-child {
+    overflow: hidden;
+    max-width: 165px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 500;
+}
+
+#contactResults,
+#activityLog {
+    display: grid;
+    gap: 7px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+#contactResults li,
+#activityLog li {
+    padding: 7px 8px;
+    border-radius: 7px;
+    background: #f4f7fb;
+    color: #31445f;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+#contactResults .empty {
+    color: #718096;
+    font-style: italic;
+}
+
+.result-name {
+    display: block;
+    color: #172b4d;
+    font-weight: 700;
+}
+
+.activity {
+    margin-bottom: 2px;
+}
+
+#activityLog {
+    max-height: 148px;
+    overflow: auto;
+}
+
+.activity-time {
+    color: #718096;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+}
+
+.text-button {
+    padding: 0;
+    border: 0;
+    color: #246bce;
+    background: transparent;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.toast {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    max-width: calc(100% - 32px);
+    padding: 9px 11px;
+    border-radius: 8px;
+    color: #fff;
+    background: #172b4d;
+    box-shadow: 0 8px 22px rgba(20, 33, 61, .25);
+    font-size: 11px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition: opacity .16s ease, transform .16s ease;
+}
+
+.toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+}

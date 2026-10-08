@@ -23,7 +23,8 @@
         legacyAudit: "territory.audit",
         // v2 fixtures model the extension and Direct Routing DID as separate contacts.
         mockUsers: "territory.mockUsers.v2",
-        selectedDivision: "territory.selectedDivision"
+        selectedDivision: "territory.selectedDivision",
+        localTerritoryPhones: "territory.localTerritoryPhones.v1"
     };
     const AUTH_STATE_KEY = "territory.oauthState";
     const VERIFIER_KEY = "territory.pkceVerifier";
@@ -44,6 +45,8 @@
         currentUser: null,
         users: [],
         ownerUsers: [],
+        localTerritoryPhones: [],
+        ownerRecordsCurrent: false,
         page: 1,
         pageSize: Number(CONFIG.pageSize || 10),
         editingPhone: null,
@@ -58,6 +61,16 @@
     async function init() {
         CONFIG.allowedDivisions = Array.isArray(CONFIG.allowedDivisions) ? CONFIG.allowedDivisions : [];
         CONFIG.territoryPhoneNumbers = Array.isArray(CONFIG.territoryPhoneNumbers) ? CONFIG.territoryPhoneNumbers : [];
+        const storedLocalTerritoryPhones = readJson(STORAGE.localTerritoryPhones, null);
+        state.localTerritoryPhones = normalizeStoredTerritoryPhones(storedLocalTerritoryPhones);
+        if (Array.isArray(storedLocalTerritoryPhones)
+            && JSON.stringify(storedLocalTerritoryPhones) !== JSON.stringify(state.localTerritoryPhones)) {
+            try {
+                writeJson(STORAGE.localTerritoryPhones, state.localTerritoryPhones);
+            } catch {
+                // Inventory normalization remains in memory if browser storage is unavailable.
+            }
+        }
         state.urlParams = parseUrlParams();
         applyUrlViewParam(state.urlParams);
         state.service = CONFIG.mockGenesys ? new MockGenesysService(CONFIG) : new GenesysService(CONFIG);
@@ -144,6 +157,8 @@
         document.getElementById("logoutButton").addEventListener("click", () => {
             state.service.logout();
             state.users = [];
+            state.ownerUsers = [];
+            state.ownerRecordsCurrent = false;
             renderSignedOut();
             showToast("Signed out.", "info");
         });
@@ -151,7 +166,9 @@
         document.getElementById("refreshUsersButton").addEventListener("click", () => loadUsers(true));
         document.getElementById("divisionSelect").addEventListener("change", () => {
             localStorage.setItem(STORAGE.selectedDivision, document.getElementById("divisionSelect").value);
+            document.getElementById("territoryPhoneDivision").value = selectedDivisionId();
             state.page = 1;
+            renderSettings();
             loadUsers(true);
         });
         document.getElementById("userSearchInput").addEventListener("input", debounce(() => {
@@ -178,6 +195,9 @@
         document.getElementById("exportAuditButton").addEventListener("click", exportAuditCsv);
         document.getElementById("clearAuditButton").addEventListener("click", clearAudit);
         document.getElementById("testGenesysButton").addEventListener("click", testConnection);
+        document.getElementById("territoryPhoneForm").addEventListener("submit", addLocalTerritoryPhone);
+        document.getElementById("exportLocalTerritoryPhonesButton").addEventListener("click", exportLocalTerritoryPhones);
+        document.getElementById("settingsDivisionsBody").addEventListener("click", handleSettingsInventoryClick);
     }
 
     function populateDivisionControls() {
@@ -185,8 +205,10 @@
         const options = CONFIG.allowedDivisions.map((division) => `<option value="${escapeHtml(division.id)}">${escapeHtml(division.name)}</option>`).join("");
         document.getElementById("divisionSelect").innerHTML = options;
         document.getElementById("auditDivisionFilter").innerHTML = `<option value="">All</option>${options}`;
+        document.getElementById("territoryPhoneDivision").innerHTML = options;
         if (CONFIG.allowedDivisions.some((division) => division.id === selected)) {
             document.getElementById("divisionSelect").value = selected;
+            document.getElementById("territoryPhoneDivision").value = selected;
         }
     }
 
@@ -216,6 +238,7 @@
         const divisionOption = findOptionByValue(divisionSelect, division);
         if (divisionOption) {
             divisionSelect.value = divisionOption.value;
+            document.getElementById("territoryPhoneDivision").value = divisionOption.value;
         }
 
         const search = getUrlParam(params, ["search", "q", "phone", "user", "email"]);
@@ -308,15 +331,18 @@
 
     async function loadUsers(force = false) {
         if (!state.currentUser) {
+            state.ownerRecordsCurrent = false;
             renderSignedOut();
-            return;
+            return false;
         }
         const divisionId = selectedDivisionId();
         if (!divisionId) {
+            state.ownerRecordsCurrent = false;
             document.getElementById("usersTableBody").innerHTML = `<tr><td colspan="11" class="text-center py-5 text-muted">Configure at least one division in assets/js/config.js.</td></tr>`;
-            return;
+            return false;
         }
 
+        state.ownerRecordsCurrent = false;
         const refreshButton = document.getElementById("refreshUsersButton");
         refreshButton.disabled = true;
         refreshButton.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Refreshing`;
@@ -339,12 +365,16 @@
             state.users = state.ownerUsers.filter((user) => {
                 return user.division_id === divisionId && (!user.state || user.state.toLowerCase() === "active");
             });
+            state.ownerRecordsCurrent = true;
             state.page = force ? 1 : state.page;
             renderAssignments();
             showToast(`Loaded ${state.users.length} assignable users, checked ${state.ownerUsers.length} owner records, and found ${buildAssignments().length} territory phones.`, "success");
+            return true;
         } catch (error) {
+            state.ownerRecordsCurrent = false;
             document.getElementById("usersTableBody").innerHTML = `<tr><td colspan="11" class="text-center py-5 text-danger">${escapeHtml(error.message)}</td></tr>`;
             showToast(error.message, "danger");
+            return false;
         } finally {
             refreshButton.disabled = false;
             refreshButton.innerHTML = `<i class="bi bi-arrow-repeat"></i> Refresh from Genesys`;
@@ -464,6 +494,10 @@
         const effectiveLocal = row.querySelector(".js-effective-at").value;
         const effectiveAt = localDateTimeToIso(effectiveLocal);
 
+        if (!state.ownerRecordsCurrent) {
+            showToast("Refresh from Genesys successfully before staging an assignment so the current DID owner can be reconciled.", "warning");
+            return;
+        }
         if (!effectiveAt) {
             showToast("Choose the date and time this assignment should go live.", "danger");
             return;
@@ -660,32 +694,34 @@
         const divisionName = divisionNameFor(divisionId);
         const byPhone = new Map();
 
-        CONFIG.territoryPhoneNumbers
-            .filter((item) => normalizeDivisionId(item) === divisionId)
+        territoryPhoneInventory()
+            .filter((item) => item.divisionId === divisionId)
             .forEach((item) => {
-                const phone = item.phone || item.number || "";
+                const phone = item.phone;
                 if (!phone) return;
-                byPhone.set(phone, {
+                byPhone.set(phoneInventoryKey(phone), {
                     phone,
                     extension: item.extension || "",
                     division_id: divisionId,
-                    division_name: item.divisionName || item.division_name || divisionName,
+                    division_name: item.divisionName || divisionName,
                     current_user_id: "",
                     current_user_name: "",
                     current_user_email: "",
                     current_user_version: "",
                     last_synced_at: "",
-                    source: "Configured"
+                    source: item.source
                 });
             });
 
         const ownerUsers = state.ownerUsers.length ? state.ownerUsers : state.users;
         ownerUsers.forEach((user) => {
             if (!user.did_phone) return;
-            const configured = byPhone.get(user.did_phone);
+            const phone = phoneInventoryKey(user.did_phone);
+            if (!phone) return;
+            const configured = byPhone.get(phone);
             if (!configured && user.division_id !== divisionId) return;
-            byPhone.set(user.did_phone, {
-                phone: user.did_phone,
+            byPhone.set(phone, {
+                phone,
                 extension: user.extension || configured?.extension || "",
                 division_id: configured?.division_id || user.division_id,
                 division_name: configured?.division_name || user.division_name || divisionName,
@@ -694,15 +730,55 @@
                 current_user_email: user.email,
                 current_user_version: user.version,
                 last_synced_at: user.last_synced_at,
-                source: configured ? "Configured + Genesys" : "Genesys"
+                source: configured ? `${configured.source} + Genesys` : "Genesys"
             });
         });
 
         return [...byPhone.values()].sort((a, b) => a.phone.localeCompare(b.phone));
     }
 
+    function territoryPhoneInventory() {
+        const byPhone = new Map();
+        const add = (item, source) => {
+            const normalized = normalizeTerritoryPhone(item, source);
+            if (!normalized) return;
+            const key = phoneInventoryKey(normalized.phone);
+            if (!byPhone.has(key)) byPhone.set(key, normalized);
+        };
+
+        CONFIG.territoryPhoneNumbers.forEach((item) => add(item, "Configured"));
+        state.localTerritoryPhones.forEach((item) => add(item, "Browser-local"));
+        return [...byPhone.values()];
+    }
+
+    function normalizeTerritoryPhone(item, source) {
+        const phone = normalizeTerritoryDid(item?.phone || item?.number || "");
+        const divisionId = source === "Browser-local"
+            ? String(item?.divisionId || item?.division_id || "").trim()
+            : normalizeDivisionId(item);
+        if (!phone || !divisionId || !isE164Phone(phone)) return null;
+        return {
+            phone,
+            extension: normalizeInventoryExtension(item?.extension),
+            divisionId,
+            divisionName: source === "Browser-local"
+                ? divisionNameFor(divisionId)
+                : String(item?.divisionName || item?.division_name || divisionNameFor(divisionId)).trim(),
+            createdAt: String(item?.createdAt || item?.created_at || "").trim(),
+            source
+        };
+    }
+
+    function phoneInventoryKey(phone) {
+        return normalizeTerritoryDid(phone);
+    }
+
     function getOpenChangeForPhone(phone) {
-        return state.changes.find((change) => change.territory_phone === phone && ["STAGED", "SCHEDULED", "FAILED"].includes(change.status));
+        const key = phoneInventoryKey(phone);
+        return state.changes.find((change) => {
+            return phoneInventoryKey(change.territory_phone) === key
+                && ["STAGED", "SCHEDULED", "APPLYING", "FAILED"].includes(change.status);
+        });
     }
 
     function replaceUser(user) {
@@ -866,31 +942,150 @@
             ["Client ID", CONFIG.genesysClientId || "Not configured"],
             ["Scheduling", "Browser-local while app is open"],
             ["Phone Integration", phoneIntegration()],
-            ["Phone Country", phoneCountryCode()]
+            ["Phone Country", phoneCountryCode()],
+            ["Browser-local territory phones", String(state.localTerritoryPhones.length)]
         ];
         document.getElementById("settingsSummary").innerHTML = settings.map(([label, value]) => `
             <div class="col-12 col-md-6 col-xl-3 settings-kpi">
                 <div class="label">${escapeHtml(label)}</div>
                 <div class="value">${escapeHtml(value)}</div>
             </div>`).join("");
-        const phones = CONFIG.territoryPhoneNumbers.filter((item) => !selectedDivisionId() || normalizeDivisionId(item) === selectedDivisionId());
+        document.getElementById("exportLocalTerritoryPhonesButton").disabled = state.localTerritoryPhones.length === 0;
+        const phones = territoryPhoneInventory().sort((left, right) => {
+            return `${left.divisionName} ${left.phone}`.localeCompare(`${right.divisionName} ${right.phone}`);
+        });
         document.getElementById("settingsDivisionsBody").innerHTML = CONFIG.allowedDivisions.map((division) => `
             <tr>
                 <td>${escapeHtml(division.name)}</td>
                 <td><code>${escapeHtml(division.id)}</code></td>
                 <td>${division.id === CONFIG.defaultDivisionId ? badge("Default", "info") : ""}</td>
+                <td>${badge("Deployed config", "secondary")}</td>
+                <td></td>
             </tr>`).join("");
         const settingsBody = document.getElementById("settingsDivisionsBody");
-        if (phones.length) {
-            settingsBody.insertAdjacentHTML("beforeend", `
-                <tr><td colspan="3" class="table-light fw-semibold">Configured Territory Phones</td></tr>
-                ${phones.map((item) => `
-                    <tr>
-                        <td>${escapeHtml(item.phone || item.number || "")}</td>
-                        <td><code>${escapeHtml(item.extension || "")}</code></td>
-                        <td>${escapeHtml(item.divisionName || divisionNameFor(normalizeDivisionId(item)))}</td>
-                    </tr>`).join("")}`);
+        settingsBody.insertAdjacentHTML("beforeend", `
+            <tr><td colspan="5" class="table-light fw-semibold">Territory Phone Inventory</td></tr>
+            ${phones.length ? phones.map((item) => `
+                <tr>
+                    <td>${escapeHtml(item.phone)}</td>
+                    <td><code>${escapeHtml(item.extension || "—")}</code></td>
+                    <td>${escapeHtml(item.divisionName || divisionNameFor(item.divisionId))}</td>
+                    <td>${item.source === "Browser-local" ? badge("Browser-local", "warning") : badge("Deployed config", "secondary")}</td>
+                    <td class="text-end">${item.source === "Browser-local" ? `<button class="btn btn-outline-danger btn-sm js-remove-local-territory-phone" data-phone="${escapeHtml(item.phone)}" type="button"><i class="bi bi-trash3"></i> Remove</button>` : ""}</td>
+                </tr>`).join("") : `
+                <tr><td colspan="5" class="text-center py-4 text-muted">No territory phones are configured yet.</td></tr>`}`);
+    }
+
+    async function addLocalTerritoryPhone(event) {
+        event.preventDefault();
+        const divisionId = document.getElementById("territoryPhoneDivision").value;
+        const phone = String(document.getElementById("territoryPhoneInput").value || "").trim();
+        const rawExtension = String(document.getElementById("territoryExtensionInput").value || "").trim();
+        const extension = normalizeInventoryExtension(rawExtension);
+
+        if (!isAllowedDivisionId(divisionId)) {
+            showToast("Choose one of the configured divisions.", "danger");
+            return;
         }
+        if (!isE164Phone(phone)) {
+            showToast("Enter the territory DID in E.164 format, for example +19165551234.", "danger");
+            return;
+        }
+        if (!isValidInventoryExtension(rawExtension)) {
+            showToast("The display extension can contain up to 32 characters and cannot contain line breaks.", "danger");
+            return;
+        }
+        if (territoryPhoneInventory().some((item) => samePhone(item.phone, phone))) {
+            showToast("That territory DID is already present in the deployed or browser-local inventory.", "warning");
+            return;
+        }
+        if (getOpenChangeForPhone(phone)) {
+            showToast("Resolve the existing staged, scheduled, or failed assignment for this DID before adding it to another division.", "warning");
+            return;
+        }
+
+        const nextInventory = [
+            ...state.localTerritoryPhones,
+            {
+                phone,
+                extension,
+                divisionId,
+                createdAt: new Date().toISOString()
+            }
+        ];
+        try {
+            writeJson(STORAGE.localTerritoryPhones, nextInventory);
+        } catch {
+            showToast("The browser could not save the territory phone inventory. Check site storage and try again.", "danger");
+            return;
+        }
+
+        state.localTerritoryPhones = normalizeStoredTerritoryPhones(nextInventory);
+        state.page = 1;
+        document.getElementById("territoryPhoneInput").value = "";
+        document.getElementById("territoryExtensionInput").value = "";
+        renderSettings();
+        if (state.currentUser) {
+            const ownersRefreshed = await loadUsers(true);
+            if (!ownersRefreshed) {
+                showToast(`Added ${phone} to this browser's territory inventory, but owner data must refresh before it can be assigned.`, "warning");
+                return;
+            }
+        }
+        showToast(`Added ${phone} to this browser's territory inventory.`, "success");
+    }
+
+    function exportLocalTerritoryPhones() {
+        if (!state.localTerritoryPhones.length) {
+            showToast("There are no browser-local territory phones to export.", "warning");
+            return;
+        }
+        const exportRows = state.localTerritoryPhones.map((item) => ({
+            phone: item.phone,
+            extension: item.extension,
+            divisionId: item.divisionId,
+            divisionName: divisionNameFor(item.divisionId)
+        }));
+        downloadBlob(
+            JSON.stringify(exportRows, null, 2),
+            `territory-phone-inventory-${new Date().toISOString().slice(0, 10)}.json`,
+            "application/json"
+        );
+        showToast("Exported browser-local territory phones for deployment.", "success");
+    }
+
+    async function handleSettingsInventoryClick(event) {
+        const button = event.target.closest(".js-remove-local-territory-phone");
+        if (!button) return;
+        const phone = phoneInventoryKey(button.dataset.phone);
+        const item = state.localTerritoryPhones.find((entry) => samePhone(entry.phone, phone));
+        if (!item) return;
+        if (getOpenChangeForPhone(phone)) {
+            showToast("Resolve the existing staged, scheduled, applying, or failed assignment before removing this browser-local territory phone.", "warning");
+            return;
+        }
+
+        const result = await confirmAction({
+            title: "Remove browser-local territory phone",
+            message: `Remove ${phone} from this browser's territory inventory? This does not delete a Genesys Direct Routing number.`,
+            buttonText: "Remove",
+            buttonVariant: "danger"
+        });
+        if (!result.confirmed) return;
+
+        const nextInventory = state.localTerritoryPhones.filter((entry) => !samePhone(entry.phone, phone));
+        try {
+            writeJson(STORAGE.localTerritoryPhones, nextInventory);
+        } catch {
+            showToast("The browser could not update the territory phone inventory. Check site storage and try again.", "danger");
+            return;
+        }
+
+        state.localTerritoryPhones = nextInventory;
+        state.page = 1;
+        renderSettings();
+        if (state.currentUser) renderAssignments();
+        showToast(`Removed ${phone} from this browser's territory inventory.`, "info");
     }
 
     class GenesysService {
@@ -1330,6 +1525,10 @@
         return item.divisionId || item.division_id || item.division || CONFIG.defaultDivisionId || "";
     }
 
+    function isAllowedDivisionId(divisionId) {
+        return CONFIG.allowedDivisions.some((division) => division.id === divisionId);
+    }
+
     function divisionNameFor(divisionId) {
         return CONFIG.allowedDivisions.find((division) => division.id === divisionId)?.name || divisionId || "";
     }
@@ -1434,11 +1633,30 @@
     }
 
     function samePhone(left, right) {
-        return String(left || "").trim() === String(right || "").trim();
+        return phoneInventoryKey(left) === phoneInventoryKey(right);
     }
 
     function isE164Phone(phone) {
         return /^\+[1-9]\d{1,14}$/.test(String(phone || "").trim());
+    }
+
+    function normalizeTerritoryDid(value) {
+        const phone = String(value ?? "").trim();
+        if (isE164Phone(phone)) return phone;
+        if (/^\+[\d\s().-]+$/.test(phone)) {
+            const formattedPhone = `+${phone.replace(/\D/g, "")}`;
+            if (isE164Phone(formattedPhone)) return formattedPhone;
+        }
+        return phone;
+    }
+
+    function normalizeInventoryExtension(value) {
+        return String(value ?? "").trim().slice(0, 32);
+    }
+
+    function isValidInventoryExtension(value) {
+        const extension = String(value ?? "").trim();
+        return extension.length <= 32 && !/[\r\n]/.test(extension);
     }
 
     function applyDirectRoutingDidFields(entry, phone) {
@@ -1637,6 +1855,30 @@
         return (Array.isArray(rows) ? rows : [])
             .filter((row) => row.territory_phone)
             .map((row) => ({ ...row }));
+    }
+
+    function normalizeStoredTerritoryPhones(rows) {
+        const configuredPhones = new Set(CONFIG.territoryPhoneNumbers.map((item) => {
+            return phoneInventoryKey(item?.phone || item?.number || "");
+        }).filter(Boolean));
+        const byPhone = new Map();
+        (Array.isArray(rows) ? rows : []).forEach((item) => {
+            const normalized = normalizeTerritoryPhone(item, "Browser-local");
+            if (!normalized
+                || !isE164Phone(normalized.phone)
+                || !isAllowedDivisionId(normalized.divisionId)
+                || !isValidInventoryExtension(item?.extension)) return;
+            const key = phoneInventoryKey(normalized.phone);
+            if (!configuredPhones.has(key) && !byPhone.has(key)) {
+                byPhone.set(key, {
+                    phone: normalized.phone,
+                    extension: normalized.extension,
+                    divisionId: normalized.divisionId,
+                    createdAt: normalized.createdAt
+                });
+            }
+        });
+        return [...byPhone.values()];
     }
 
     function buildMockUsers() {

@@ -19,6 +19,7 @@ This version is intentionally static: `index.html`, `assets/css/styles.css`, `as
 - Updates preserve email addresses, the primary extension, and other unrelated contact entries.
 - Mock mode for testing without Genesys credentials.
 - Local browser audit log and CSV export.
+- Browser-local territory-phone inventory: add an already-provisioned DID, give it an optional display extension, assign it through the existing review flow, and export it for shared deployment.
 - URL query parameters displayed on the dashboard, with a few known params wired into filters.
 
 ## URL Parameters
@@ -51,6 +52,7 @@ GitHub Pages cannot run backend code. That means:
 - Do not store durable shared approvals, server-side schedules, or audit logs unless you add a backend later.
 - Role enforcement must come from Genesys Cloud permissions and division access.
 - The local review queue, schedule queue, and audit log are stored in the user's browser only.
+- Browser-local territory inventory is also per browser and site origin. It can be cleared with browser data and is not visible to colleagues until it is exported, merged into configuration, and redeployed.
 - Scheduled changes are applied only when the app is open at or after the effective time.
 
 For a shared approval workflow, reliable unattended scheduling, durable audit retention, or centralized role mapping, add a small backend later.
@@ -99,6 +101,18 @@ window.TERRITORY_APP_CONFIG = {
 The client ID is public in a browser app. Never add a client secret.
 
 `territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys. Its optional `extension` value is a display fallback for an unassigned DID; assigning a DID preserves the selected user's existing extension.
+
+## Add a Territory Phone From Settings
+
+Use **Settings → Browser-Local Territory Inventory** to add an already-provisioned Direct Routing DID without editing code:
+
+1. Choose a configured division.
+2. Enter the DID in exact E.164 format, such as `+19165551234`.
+3. Optionally enter a display extension. This is shown only while the DID is unassigned; it does not create or change a Genesys extension.
+4. Select **Add Territory Phone**. The app refreshes permitted owner records before the DID can be staged, then shows the number in the Dashboard for that division.
+5. Select **Export for Deployment**, merge the downloaded JSON entries into `territoryPhoneNumbers` in `assets/js/config.js`, and redeploy to make them shared and authoritative.
+
+The Settings form rejects a DID already in the deployed or browser-local inventory, including one in another division, and it will not re-scope a DID with an open staged, scheduled, applying, or failed assignment. A browser-local row can be removed with confirmation if it has no open assignment; remove and re-add it to correct a typo. Adding inventory makes no Genesys write API call and does not create a Direct Routing DID, provision a carrier number, or create an extension. Do those tasks through your organization's Direct Routing/telephony administration process first. The app can only attach an already-provisioned DID to a user who already has matching `PHONE` / `WORK` and `PHONE` / `PRIMARY` extension contacts.
 
 The app searches active and inactive users in every configured allowed division to locate an existing DID owner before reassignment. User searches set `enforcePermissions: true`; a DID held outside the configured or authorized scope must be cleared by an administrator before it can be reassigned.
 

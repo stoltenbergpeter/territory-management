@@ -21,7 +21,7 @@ window.TERRITORY_APP_CONFIG = {
     // DID preserves the selected user's existing PHONE/WORK extension. Export
     // browser-local additions from Settings and merge them here to share them.
     territoryPhoneNumbers: [
-        { phone: "+14155550101", extension: "4101", divisionId: "sales-west", divisionName: "Sales West" },
+        { phone: "+19164631708", extension: "1151708", divisionId: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", divisionName: "Sales" },
         { phone: "+14155550102", extension: "4102", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550103", extension: "4103", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550104", extension: "4104", divisionId: "sales-west", divisionName: "Sales West" },

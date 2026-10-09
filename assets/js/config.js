@@ -13,8 +13,7 @@ window.TERRITORY_APP_CONFIG = {
 
     defaultDivisionId: "sales-west",
     allowedDivisions: [
-    { id: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", name: "Sales" },
-        { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" },
+    { id: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", name: "Sales" }
     ],
 
     // Optional DID inventory. These numbers remain visible as territory rows

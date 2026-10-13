@@ -19,6 +19,7 @@ This version is intentionally static: `index.html`, `assets/css/styles.css`, `as
 - Updates preserve email addresses, the primary extension, and other unrelated contact entries.
 - Mock mode for testing without Genesys credentials.
 - Local browser audit log and CSV export.
+- A separate Settings workflow to attach an already-provisioned Direct Routing DID to one specific user and append it to an Architect Call Route. It uses a current-version user PATCH followed by a current-version Call Route PUT, verifies both writes, retries version conflicts, and records partial success if only the user update completes.
 - Browser-local territory-phone inventory: add an already-provisioned DID, give it an optional display extension, assign it through the existing review flow, and export it for shared deployment.
 - URL query parameters displayed on the dashboard, with a few known params wired into filters.
 
@@ -54,6 +55,7 @@ GitHub Pages cannot run backend code. That means:
 - The local review queue, schedule queue, and audit log are stored in the user's browser only.
 - Browser-local territory inventory is also per browser and site origin. It can be cleared with browser data and is not visible to colleagues until it is exported, merged into configuration, and redeployed.
 - Scheduled changes are applied only when the app is open at or after the effective time.
+- The app does not look up or validate a DID pool. Numbers must be provisioned and governed through your organization's Direct Routing/telephony process before they are attached to a user or Call Route.
 
 For a shared approval workflow, reliable unattended scheduling, durable audit retention, or centralized role mapping, add a small backend later.
 
@@ -73,7 +75,8 @@ The supplied Genesys Cloud Python SDK reference uses Client Credentials for trus
 5. Grant the users appropriate Genesys roles/scopes for:
    - reading/searching users,
    - reading the selected divisions,
-   - updating user contact information.
+   - updating user contact information,
+   - reading and updating the intended Architect Call Route.
 
 Genesys permissions and division scopes are the real security boundary for this static app.
 
@@ -88,6 +91,7 @@ window.TERRITORY_APP_CONFIG = {
     genesysClientId: "YOUR_PUBLIC_PKCE_CLIENT_ID",
     redirectUri: "https://your-org.github.io/territory-management/",
     phoneCountryCode: "US",
+    callRouteId: "YOUR_ARCHITECT_CALL_ROUTE_UUID",
     defaultDivisionId: "YOUR_DIVISION_ID",
     allowedDivisions: [
         { id: "YOUR_DIVISION_ID", name: "Sales" }
@@ -102,6 +106,27 @@ The client ID is public in a browser app. Never add a client secret.
 
 `territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys. Its optional `extension` value is a display fallback for an unassigned DID; assigning a DID preserves the selected user's existing extension.
 
+## Add a Direct Routing Phone and Call Route DNIS
+
+Use **Settings → Add Direct Routing Phone** when an already-provisioned DID needs to be added to one specific user and to an Architect Call Route:
+
+1. Set `callRouteId` in `assets/js/config.js` to the production Architect Call Route UUID, or enter the route UUID in the form for a one-off change.
+2. Choose a loaded target user or enter the target Genesys user UUID, then enter the DID in exact E.164 format.
+3. Confirm the Call Route UUID. The configured `phoneCountryCode` is used for the user's new `PHONE` / `WORK2` / `directrouting` address.
+4. If the user already has a different Direct Routing phone, explicitly select **Replace a different existing Direct Routing phone**. Without that selection, the app blocks the change rather than silently replacing a number.
+5. Review the confirmation. The app first patches the user and then appends the DID to the Call Route's `dnis` list.
+
+This workflow deliberately does **not** call a DID-pool API or decide whether a carrier number is available. It only prevents duplicate work on the target user and target Call Route. It sends the user contact update first; if the Call Route update fails afterward, it records `PARTIAL_SUCCESS` in the local audit log and does not automatically roll back the user. Re-run the same request after resolving the Call Route issue: user and route membership checks make the retry safe.
+
+The browser calls these Genesys REST endpoints with the signed-in user's PKCE token:
+
+```text
+GET/PATCH /api/v2/users/{userId}
+GET/PUT   /api/v2/architect/ivrs/{callRouteId}
+```
+
+For the user PATCH, the app sends the current `version` and complete current `addresses` list, changing only the Direct Routing entry (or replacing a matching ordinary phone entry that would otherwise duplicate the DID); it intentionally omits the server-managed `primaryContactInfo`. For the Call Route PUT, it starts with a fresh GET and sends only the route's writable fields (`name`, `division`, `description`, `version`, `dnis`, flow references, and `scheduleGroup`) with the DID appended once. Both mutations retry a `409` conflict by re-reading and rebuilding their payloads, then finish with a verifying GET.
+
 ## Add a Territory Phone From Settings
 
 Use **Settings → Browser-Local Territory Inventory** to add an already-provisioned Direct Routing DID without editing code:
@@ -112,7 +137,7 @@ Use **Settings → Browser-Local Territory Inventory** to add an already-provisi
 4. Select **Add Territory Phone**. The app refreshes permitted owner records before the DID can be staged, then shows the number in the Dashboard for that division.
 5. Select **Export for Deployment**, merge the downloaded JSON entries into `territoryPhoneNumbers` in `assets/js/config.js`, and redeploy to make them shared and authoritative.
 
-The Settings form rejects a DID already in the deployed or browser-local inventory, including one in another division, and it will not re-scope a DID with an open staged, scheduled, applying, or failed assignment. A browser-local row can be removed with confirmation if it has no open assignment; remove and re-add it to correct a typo. Adding inventory makes no Genesys write API call and does not create a Direct Routing DID, provision a carrier number, or create an extension. Do those tasks through your organization's Direct Routing/telephony administration process first. The app can only attach an already-provisioned DID to a user who already has matching `PHONE` / `WORK` and `PHONE` / `PRIMARY` extension contacts.
+The Settings form rejects a DID already in the deployed or browser-local inventory, including one in another division, and it will not re-scope a DID with an open staged, scheduled, applying, or failed assignment. A browser-local row can be removed with confirmation if it has no open assignment; remove and re-add it to correct a typo. Adding inventory makes no Genesys write API call and does not create a Direct Routing DID, provision a carrier number, or create an extension. Do those tasks through your organization's Direct Routing/telephony administration process first. The existing assignment/reassignment flow still requires matching `PHONE` / `WORK` and `PHONE` / `PRIMARY` extension contacts; the separate Add Direct Routing Phone workflow preserves any existing contacts and does not require those extension entries.
 
 The app searches active and inactive users in every configured allowed division to locate an existing DID owner before reassignment. User searches set `enforcePermissions: true`; a DID held outside the configured or authorized scope must be cleared by an administrator before it can be reassigned.
 
@@ -124,11 +149,11 @@ The accompanying quick reference documents the Python SDK. Its models use Python
 
 This app calls the Genesys Cloud REST API directly from browser JavaScript, so its JSON payloads must use the REST camel-case names: `pageSize`, `pageNumber`, `primaryContactInfo`, `mediaType`, and `countryCode`. It does not create a `PureCloudPlatformClientV2` client.
 
-The reference's call-forwarding operations are not part of this assignment-only application. A call-forwarding feature would need its own UI and REST calls for `GET` and `PATCH /api/v2/users/{userId}/callforwarding`.
+The reference's call-forwarding operations are not part of this browser application. A call-forwarding feature would need its own UI and REST calls for `GET` and `PATCH /api/v2/users/{userId}/callforwarding`.
 
 ## Direct Routing Phone Payload
 
-When applying an assignment, retain the user's internal extension as the `PHONE` / `WORK` address. Retain the primary extension as the `PHONE` / `PRIMARY` entry in `primaryContactInfo`. The DID is a separate `PHONE` / `WORK2` Direct Routing address; replace the existing Direct Routing `WORK2` entry instead of adding another one.
+When applying an assignment, retain the user's internal extension as the `PHONE` / `WORK` address. Retain the primary extension as the `PHONE` / `PRIMARY` entry in `primaryContactInfo`. The DID is a separate `PHONE` / `WORK2` Direct Routing address; the existing assignment/reassignment flow replaces its existing Direct Routing `WORK2` entry instead of adding another one.
 
 ```json
 {
@@ -174,6 +199,8 @@ For example, the extension contacts remain separate from the DID:
 
 Existing email addresses, primary email contacts, and unrelated contacts must remain in their respective lists. Use the current `version` returned by `GET /api/v2/users/{userId}` in the `PATCH /api/v2/users/{userId}` payload, then issue a final GET to verify the assignment. When moving a DID, remove it from the old user before adding it to the new user.
 
+The separate **Add Direct Routing Phone** workflow uses the same DID contact shape, but it sends the narrow `{ version, addresses }` payload only. It does not send `primaryContactInfo`, does not check a DID pool, and requires explicit consent before replacing a different Direct Routing contact on the target user.
+
 ## Run Locally
 
 Mock mode works by opening `index.html` directly, but OAuth redirects are easier to test from a local web server:
@@ -208,5 +235,8 @@ For local Genesys OAuth testing, add `http://localhost:8000/` to the OAuth clien
 - No client secret in the repository.
 - Genesys roles are least privilege.
 - Genesys roles are scoped to the allowed divisions.
+- `callRouteId` is the intended Architect Call Route UUID, or operators know the authorized one-off route UUID to enter.
+- Genesys roles can read and update that Call Route as well as update user contact information.
+- Direct Routing DIDs are provisioned and approved outside this app; the app performs no DID-pool validation.
 - Business users understand that local audit/review/schedule data is browser-local.
 - A backend is added if shared approvals, unattended scheduling, or durable audit retention become required.

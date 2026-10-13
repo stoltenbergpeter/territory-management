@@ -21,11 +21,27 @@
         audit: "territory.assignmentAudit",
         legacyChanges: "territory.changes",
         legacyAudit: "territory.audit",
-        // v2 fixtures model the extension and Direct Routing DID as separate contacts.
-        mockUsers: "territory.mockUsers.v2",
+        // v3 fixtures use UUID-shaped IDs and model the extension and Direct Routing DID as separate contacts.
+        mockUsers: "territory.mockUsers.v3",
+        mockCallRoutes: "territory.mockCallRoutes.v1",
         selectedDivision: "territory.selectedDivision",
         localTerritoryPhones: "territory.localTerritoryPhones.v1"
     };
+    const DEFAULT_MOCK_CALL_ROUTE_ID = "00000000-0000-4000-8000-000000000001";
+    const CALL_ROUTE_WRITABLE_FIELDS = [
+        "name",
+        "division",
+        "description",
+        "version",
+        "dnis",
+        "openHoursFlow",
+        "closedHoursFlow",
+        "holidayHoursFlow",
+        "scheduleGroup"
+    ];
+    const MAX_MUTATION_ATTEMPTS = 3;
+    const MAX_VERIFICATION_ATTEMPTS = 4;
+    const VERIFICATION_RETRY_DELAY_MS = 250;
     const AUTH_STATE_KEY = "territory.oauthState";
     const VERIFIER_KEY = "territory.pkceVerifier";
     const RETURN_HASH_KEY = "territory.returnHash";
@@ -61,6 +77,10 @@
     async function init() {
         CONFIG.allowedDivisions = Array.isArray(CONFIG.allowedDivisions) ? CONFIG.allowedDivisions : [];
         CONFIG.territoryPhoneNumbers = Array.isArray(CONFIG.territoryPhoneNumbers) ? CONFIG.territoryPhoneNumbers : [];
+        CONFIG.callRouteId = String(CONFIG.callRouteId || "").trim();
+        CONFIG.mockCallRouteId = isGenesysUuid(CONFIG.mockCallRouteId)
+            ? String(CONFIG.mockCallRouteId).trim()
+            : DEFAULT_MOCK_CALL_ROUTE_ID;
         const storedLocalTerritoryPhones = readJson(STORAGE.localTerritoryPhones, null);
         state.localTerritoryPhones = normalizeStoredTerritoryPhones(storedLocalTerritoryPhones);
         if (Array.isArray(storedLocalTerritoryPhones)
@@ -195,6 +215,7 @@
         document.getElementById("exportAuditButton").addEventListener("click", exportAuditCsv);
         document.getElementById("clearAuditButton").addEventListener("click", clearAudit);
         document.getElementById("testGenesysButton").addEventListener("click", testConnection);
+        document.getElementById("directRoutingPhoneForm").addEventListener("submit", addDirectRoutingPhone);
         document.getElementById("territoryPhoneForm").addEventListener("submit", addLocalTerritoryPhone);
         document.getElementById("exportLocalTerritoryPhonesButton").addEventListener("click", exportLocalTerritoryPhones);
         document.getElementById("settingsDivisionsBody").addEventListener("click", handleSettingsInventoryClick);
@@ -368,6 +389,7 @@
             state.ownerRecordsCurrent = true;
             state.page = force ? 1 : state.page;
             renderAssignments();
+            renderDirectRoutingUserSuggestions();
             showToast(`Loaded ${state.users.length} assignable users, checked ${state.ownerUsers.length} owner records, and found ${buildAssignments().length} territory phones.`, "success");
             return true;
         } catch (error) {
@@ -818,18 +840,20 @@
 
     function renderAudit() {
         const body = document.getElementById("auditTableBody");
-        const userFilter = document.getElementById("auditUserFilter").value.trim().toLowerCase();
-        const divisionFilter = document.getElementById("auditDivisionFilter").value;
-        const statusFilter = document.getElementById("auditStatusFilter").value;
-        const rows = state.audit.filter((row) => {
-            const textMatches = !userFilter || [
-                row.actor_email,
-                row.territory_phone,
-                row.old_user_email,
-                row.old_user_name,
-                row.new_user_email,
-                row.new_user_name
-            ].join(" ").toLowerCase().includes(userFilter);
+            const userFilter = document.getElementById("auditUserFilter").value.trim().toLowerCase();
+            const divisionFilter = document.getElementById("auditDivisionFilter").value;
+            const statusFilter = document.getElementById("auditStatusFilter").value;
+            const rows = state.audit.filter((row) => {
+                const textMatches = !userFilter || [
+                    row.actor_email,
+                    row.operation,
+                    row.territory_phone,
+                    row.old_user_email,
+                    row.old_user_name,
+                    row.new_user_email,
+                    row.new_user_name,
+                    row.call_route_id
+                ].join(" ").toLowerCase().includes(userFilter);
             const divisionMatches = !divisionFilter || row.division_id === divisionFilter;
             const statusMatches = !statusFilter || row.status === statusFilter;
             return textMatches && divisionMatches && statusMatches;
@@ -854,10 +878,63 @@
             </tr>`).join("");
     }
 
+    function buildDirectRoutingPhoneAuditChange({
+        user,
+        userId,
+        phone,
+        callRouteId,
+        userStatus,
+        routeStatus,
+        userCorrelationId,
+        routeCorrelationId
+    }) {
+        const normalizedUser = user ? state.service.normalizeUser(user) : {};
+        return {
+            operation: "ADD_DIRECT_ROUTING_PHONE",
+            territory_phone: phone,
+            territory_extension: normalizedUser.extension || "",
+            division_id: normalizedUser.division_id || "",
+            division_name: normalizedUser.division_name || "",
+            old_user_id: "",
+            old_user_name: "",
+            old_user_email: "",
+            new_user_id: normalizedUser.id || userId,
+            new_user_name: normalizedUser.name || userId,
+            new_user_email: normalizedUser.email || "",
+            effective_at: new Date().toISOString(),
+            call_route_id: callRouteId,
+            user_patch_status: userStatus || "",
+            route_update_status: routeStatus || "",
+            user_correlation_id: userCorrelationId || "",
+            route_correlation_id: routeCorrelationId || "",
+            correlation_id: joinCorrelationIds(userCorrelationId, routeCorrelationId)
+        };
+    }
+
+    function directRoutingStatusText(status) {
+        if (status === "UPDATED") return "updated";
+        if (status === "UNCHANGED") return "already matched";
+        if (status === "UNKNOWN_AFTER_WRITE") return "accepted but not verified";
+        if (status === "NOT_ATTEMPTED") return "not attempted";
+        return String(status || "failed").toLowerCase().replaceAll("_", " ");
+    }
+
+    function directRoutingFailureMessage(error, partialSuccess) {
+        if (!partialSuccess) return error.message;
+        if (error.routeStatus === "NOT_ATTEMPTED") {
+            return `The user contact update was accepted but could not be verified: ${error.message} The Call Route was not attempted; verify the user before retrying.`;
+        }
+        if (error.routeStatus === "UNKNOWN_AFTER_WRITE") {
+            return `User contact ${directRoutingStatusText(error.userStatus)}; the Call Route update was accepted but could not be verified: ${error.message} Verify the Call Route before retrying.`;
+        }
+        return `User contact ${directRoutingStatusText(error.userStatus)}; Call Route update failed: ${error.message} No rollback was attempted.`;
+    }
+
     function appendAudit(change, status, message) {
         state.audit.unshift({
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
+            operation: change.operation || "ASSIGNMENT",
             actor_email: state.currentUser?.email || change.actor_email || "",
             territory_phone: change.territory_phone,
             territory_extension: change.territory_extension,
@@ -872,7 +949,12 @@
             effective_at: change.effective_at,
             status,
             message,
-            correlation_id: change.correlation_id || ""
+            correlation_id: change.correlation_id || "",
+            call_route_id: change.call_route_id || "",
+            user_patch_status: change.user_patch_status || "",
+            route_update_status: change.route_update_status || "",
+            user_correlation_id: change.user_correlation_id || "",
+            route_correlation_id: change.route_correlation_id || ""
         });
         state.audit = state.audit.slice(0, 500);
         writeJson(STORAGE.audit, state.audit);
@@ -894,9 +976,10 @@
     }
 
     function exportAuditCsv() {
-        const headers = ["Timestamp", "Actor", "Territory Phone", "Extension", "Division", "Old User", "New User", "Effective At", "Status", "Message", "Correlation ID"];
+        const headers = ["Timestamp", "Operation", "Actor", "Territory Phone", "Extension", "Division", "Old User", "New User", "Effective At", "Status", "Call Route ID", "User Contact Status", "Call Route Status", "Message", "Correlation ID", "User Correlation ID", "Call Route Correlation ID"];
         const rows = state.audit.map((row) => [
             row.timestamp,
+            row.operation || "ASSIGNMENT",
             row.actor_email,
             row.territory_phone,
             row.territory_extension,
@@ -905,8 +988,13 @@
             row.new_user_name || "Unassigned",
             row.effective_at,
             row.status,
+            row.call_route_id,
+            row.user_patch_status,
+            row.route_update_status,
             row.message,
-            row.correlation_id
+            row.correlation_id,
+            row.user_correlation_id,
+            row.route_correlation_id
         ]);
         const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
         downloadBlob(csv, `territory-phone-assignment-audit-${new Date().toISOString().slice(0, 10)}.csv`, "text/csv");
@@ -943,6 +1031,7 @@
             ["Scheduling", "Browser-local while app is open"],
             ["Phone Integration", phoneIntegration()],
             ["Phone Country", phoneCountryCode()],
+            ["Default Call Route", configuredCallRouteId() || "Not configured"],
             ["Browser-local territory phones", String(state.localTerritoryPhones.length)]
         ];
         document.getElementById("settingsSummary").innerHTML = settings.map(([label, value]) => `
@@ -951,6 +1040,10 @@
                 <div class="value">${escapeHtml(value)}</div>
             </div>`).join("");
         document.getElementById("exportLocalTerritoryPhonesButton").disabled = state.localTerritoryPhones.length === 0;
+        document.getElementById("directRoutingCountryCode").textContent = phoneCountryCode();
+        const callRouteInput = document.getElementById("directRoutingCallRouteId");
+        if (!callRouteInput.value.trim()) callRouteInput.value = configuredCallRouteId();
+        renderDirectRoutingUserSuggestions();
         const phones = territoryPhoneInventory().sort((left, right) => {
             return `${left.divisionName} ${left.phone}`.localeCompare(`${right.divisionName} ${right.phone}`);
         });
@@ -974,6 +1067,17 @@
                     <td class="text-end">${item.source === "Browser-local" ? `<button class="btn btn-outline-danger btn-sm js-remove-local-territory-phone" data-phone="${escapeHtml(item.phone)}" type="button"><i class="bi bi-trash3"></i> Remove</button>` : ""}</td>
                 </tr>`).join("") : `
                 <tr><td colspan="5" class="text-center py-4 text-muted">No territory phones are configured yet.</td></tr>`}`);
+    }
+
+    function renderDirectRoutingUserSuggestions() {
+        const suggestions = new Map();
+        [...state.ownerUsers, ...state.users].forEach((user) => {
+            if (user?.id) suggestions.set(user.id, user);
+        });
+        document.getElementById("directRoutingUserOptions").innerHTML = [...suggestions.values()]
+            .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")))
+            .map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name || user.id)} — ${escapeHtml(user.email || "")}</option>`)
+            .join("");
     }
 
     async function addLocalTerritoryPhone(event) {
@@ -1033,6 +1137,106 @@
             }
         }
         showToast(`Added ${phone} to this browser's territory inventory.`, "success");
+    }
+
+    async function addDirectRoutingPhone(event) {
+        event.preventDefault();
+        const userId = String(document.getElementById("directRoutingUserId").value || "").trim();
+        const phoneInput = document.getElementById("directRoutingPhoneInput");
+        const phone = normalizeTerritoryDid(phoneInput.value);
+        const callRouteId = String(document.getElementById("directRoutingCallRouteId").value || "").trim();
+        const countryCode = normalizeCountryCode(phoneCountryCode());
+        const replaceExisting = document.getElementById("replaceExistingDirectRoutingPhone").checked;
+
+        if (!state.currentUser) {
+            showToast("Sign in to Genesys before adding a Direct Routing phone.", "danger");
+            return;
+        }
+        if (!isGenesysUuid(userId)) {
+            showToast("Enter the target Genesys User ID as a UUID.", "danger");
+            return;
+        }
+        if (!isE164Phone(phone)) {
+            showToast("Enter the Direct Routing DID in E.164 format, for example +19165551234.", "danger");
+            return;
+        }
+        if (!isGenesysUuid(callRouteId)) {
+            showToast("Enter the Architect Call Route ID as a UUID.", "danger");
+            return;
+        }
+        if (!isCountryCode(countryCode)) {
+            showToast("Configure phoneCountryCode in assets/js/config.js as a two-letter country code.", "danger");
+            return;
+        }
+
+        phoneInput.value = phone;
+        const confirmation = await confirmAction({
+            title: "Add Direct Routing phone",
+            message: `Add ${phone} to user ${userId} and Call Route ${callRouteId}? The app will not check DID pools. If that DID is already an ordinary user phone contact, it will be converted instead of duplicated. The app updates the user first and then the Call Route; a Call Route failure leaves the user change in place without automatic rollback.`,
+            buttonText: "Add Phone",
+            buttonVariant: "primary"
+        });
+        if (!confirmation.confirmed) return;
+
+        const button = document.getElementById("addDirectRoutingPhoneButton");
+        button.disabled = true;
+        button.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Adding`;
+
+        try {
+            const result = await state.service.addDirectRoutingPhoneAndUpdateCallRoute({
+                userId,
+                phone,
+                countryCode,
+                callRouteId,
+                replaceExisting
+            });
+            replaceUser(result.user);
+            const auditChange = buildDirectRoutingPhoneAuditChange({
+                user: result.user,
+                userId,
+                phone,
+                callRouteId,
+                userStatus: result.userStatus,
+                routeStatus: result.routeStatus,
+                userCorrelationId: result.userCorrelationId,
+                routeCorrelationId: result.routeCorrelationId
+            });
+            appendAudit(
+                auditChange,
+                "APPLIED",
+                `User contact ${directRoutingStatusText(result.userStatus)}; Call Route ${callRouteId} DNIS ${directRoutingStatusText(result.routeStatus)}.`
+            );
+            document.getElementById("directRoutingPhoneInput").value = "";
+            document.getElementById("replaceExistingDirectRoutingPhone").checked = false;
+            renderAssignments();
+            showToast(`Added ${phone} to the user and Call Route.`, "success");
+        } catch (error) {
+            const updatedUser = error.updatedUser || null;
+            if (updatedUser) replaceUser(updatedUser);
+            const partialSuccess = Boolean(error.userUpdateCompleted || updatedUser)
+                && ["UPDATED", "UNCHANGED", "UNKNOWN_AFTER_WRITE"].includes(error.userStatus);
+            const routeStatus = error.routeStatus || "NOT_ATTEMPTED";
+            const errorCorrelationId = error.correlationId || "";
+            const auditChange = buildDirectRoutingPhoneAuditChange({
+                user: updatedUser,
+                userId,
+                phone,
+                callRouteId,
+                userStatus: error.userStatus || "FAILED",
+                routeStatus,
+                userCorrelationId: error.userCorrelationId
+                    || (routeStatus === "NOT_ATTEMPTED" ? errorCorrelationId : ""),
+                routeCorrelationId: error.routeCorrelationId
+                    || (routeStatus !== "NOT_ATTEMPTED" ? errorCorrelationId : "")
+            });
+            const message = directRoutingFailureMessage(error, partialSuccess);
+            appendAudit(auditChange, partialSuccess ? "PARTIAL_SUCCESS" : "FAILED", message);
+            renderAssignments();
+            showToast(message, partialSuccess ? "warning" : "danger");
+        } finally {
+            button.disabled = false;
+            button.innerHTML = `<i class="bi bi-person-plus"></i> Add Phone`;
+        }
     }
 
     function exportLocalTerritoryPhones() {
@@ -1223,6 +1427,207 @@
             return data;
         }
 
+        async getCallRoute(callRouteId) {
+            const { data } = await this.request("GET", `/api/v2/architect/ivrs/${encodeURIComponent(callRouteId)}`);
+            return data;
+        }
+
+        async updateUser(userId, patch) {
+            return this.request("PATCH", `/api/v2/users/${encodeURIComponent(userId)}`, patch);
+        }
+
+        async updateCallRoute(callRouteId, patch) {
+            return this.request("PUT", `/api/v2/architect/ivrs/${encodeURIComponent(callRouteId)}`, patch);
+        }
+
+        async addDirectRoutingPhoneAndUpdateCallRoute({ userId, phone, countryCode, callRouteId, replaceExisting = false }) {
+            const normalizedUserId = String(userId || "").trim();
+            const normalizedPhone = normalizeTerritoryDid(phone);
+            const normalizedCountryCode = normalizeCountryCode(countryCode);
+            const normalizedCallRouteId = String(callRouteId || "").trim();
+
+            if (!isGenesysUuid(normalizedUserId)) {
+                throw new Error("The target Genesys User ID must be a UUID.");
+            }
+            if (!isE164Phone(normalizedPhone)) {
+                throw new Error("The Direct Routing DID must be an E.164 phone number, for example +19165551234.");
+            }
+            if (!isCountryCode(normalizedCountryCode)) {
+                throw new Error("The Direct Routing phone country code must be a two-letter ISO country code.");
+            }
+            if (!isGenesysUuid(normalizedCallRouteId)) {
+                throw new Error("The Architect Call Route ID must be a UUID.");
+            }
+
+            // Preflight both resources before the first write. This is not a DID-pool
+            // lookup; it prevents a missing or inaccessible Call Route from leaving
+            // an avoidable user-only update.
+            const [initialUser, initialCallRoute] = await Promise.all([
+                this.getUser(normalizedUserId),
+                this.getCallRoute(normalizedCallRouteId)
+            ]);
+            this.buildAddDirectRoutingPhonePatch(initialUser, normalizedPhone, normalizedCountryCode, Boolean(replaceExisting));
+            this.buildCallRouteUpdatePayload(initialCallRoute, normalizedPhone);
+
+            let userResult;
+            try {
+                userResult = await this.ensureDirectRoutingPhoneOnUser(
+                    normalizedUserId,
+                    normalizedPhone,
+                    normalizedCountryCode,
+                    Boolean(replaceExisting),
+                    initialUser
+                );
+            } catch (error) {
+                // The Call Route mutation has not started yet, whether the user
+                // write failed or its post-write verification was inconclusive.
+                error.callRouteId = normalizedCallRouteId;
+                error.routeStatus = error.routeStatus || "NOT_ATTEMPTED";
+                error.routeCorrelationId = error.routeCorrelationId || "";
+                throw error;
+            }
+            try {
+                const routeResult = await this.ensureDirectRoutingDidOnCallRoute(
+                    normalizedCallRouteId,
+                    normalizedPhone,
+                    // Re-read after the user mutation so a concurrent Call Route
+                    // edit cannot turn an earlier no-op check into a false success.
+                    null
+                );
+                return {
+                    user: userResult.user,
+                    callRoute: routeResult.callRoute,
+                    userStatus: userResult.status,
+                    routeStatus: routeResult.status,
+                    userCorrelationId: userResult.correlationId,
+                    routeCorrelationId: routeResult.correlationId
+                };
+            } catch (error) {
+                error.updatedUser = error.updatedUser || userResult.user;
+                error.userUpdateCompleted = error.userUpdateCompleted || ["UPDATED", "UNCHANGED"].includes(userResult.status);
+                error.userStatus = error.userStatus || userResult.status;
+                error.userCorrelationId = error.userCorrelationId || userResult.correlationId || "";
+                error.callRouteId = normalizedCallRouteId;
+                error.routeStatus = error.routeStatus || "FAILED";
+                error.routeCorrelationId = error.routeCorrelationId || error.correlationId || "";
+                throw error;
+            }
+        }
+
+        async ensureDirectRoutingPhoneOnUser(userId, phone, countryCode, replaceExisting, initialUser = null) {
+            let currentUser = initialUser;
+            let writeCorrelationId = "";
+
+            for (let attempt = 0; attempt < MAX_MUTATION_ATTEMPTS; attempt += 1) {
+                if (!currentUser) currentUser = await this.getUser(userId);
+                const plan = this.buildAddDirectRoutingPhonePatch(currentUser, phone, countryCode, replaceExisting);
+                if (!plan.required) {
+                    return { user: currentUser, status: "UNCHANGED", correlationId: writeCorrelationId };
+                }
+
+                let updatedUser = null;
+                let userUpdateCompleted = false;
+                try {
+                    const response = await this.updateUser(userId, plan.patch);
+                    updatedUser = response.data || null;
+                    writeCorrelationId = response.correlationId || writeCorrelationId;
+                    userUpdateCompleted = true;
+                    const verifiedUser = await this.verifyDirectRoutingPhoneOnUser(userId, phone, countryCode);
+                    return { user: verifiedUser, status: "UPDATED", correlationId: writeCorrelationId };
+                } catch (error) {
+                    if (userUpdateCompleted) {
+                        error.updatedUser = updatedUser;
+                        error.userUpdateCompleted = true;
+                        error.userStatus = "UNKNOWN_AFTER_WRITE";
+                        error.userCorrelationId = writeCorrelationId;
+                        error.verificationCorrelationId = error.correlationId || "";
+                    } else if (isConflictError(error) && attempt < MAX_MUTATION_ATTEMPTS - 1) {
+                        currentUser = null;
+                        continue;
+                    }
+                    error.correlationId = error.correlationId || writeCorrelationId;
+                    throw error;
+                }
+            }
+
+            throw new Error("Genesys could not update the Direct Routing user contact after repeated conflicts.");
+        }
+
+        async ensureDirectRoutingDidOnCallRoute(callRouteId, phone, initialCallRoute = null) {
+            let currentCallRoute = initialCallRoute;
+            let writeCorrelationId = "";
+
+            for (let attempt = 0; attempt < MAX_MUTATION_ATTEMPTS; attempt += 1) {
+                if (!currentCallRoute) currentCallRoute = await this.getCallRoute(callRouteId);
+                const plan = this.buildCallRouteUpdatePayload(currentCallRoute, phone);
+                if (!plan.required) {
+                    return { callRoute: currentCallRoute, status: "UNCHANGED", correlationId: writeCorrelationId };
+                }
+
+                let updatedCallRoute = null;
+                let routeUpdateCompleted = false;
+                try {
+                    const response = await this.updateCallRoute(callRouteId, plan.patch);
+                    updatedCallRoute = response.data || null;
+                    writeCorrelationId = response.correlationId || writeCorrelationId;
+                    routeUpdateCompleted = true;
+                    const verifiedCallRoute = await this.verifyDirectRoutingDidOnCallRoute(callRouteId, phone);
+                    return { callRoute: verifiedCallRoute, status: "UPDATED", correlationId: writeCorrelationId };
+                } catch (error) {
+                    if (routeUpdateCompleted) {
+                        error.updatedCallRoute = updatedCallRoute;
+                        error.routeUpdateCompleted = true;
+                        error.routeStatus = "UNKNOWN_AFTER_WRITE";
+                        error.routeCorrelationId = writeCorrelationId;
+                        error.verificationCorrelationId = error.correlationId || "";
+                    } else if (isConflictError(error) && attempt < MAX_MUTATION_ATTEMPTS - 1) {
+                        currentCallRoute = null;
+                        continue;
+                    }
+                    error.correlationId = error.correlationId || writeCorrelationId;
+                    throw error;
+                }
+            }
+
+            throw new Error("Genesys could not update the Call Route after repeated conflicts.");
+        }
+
+        async verifyDirectRoutingPhoneOnUser(userId, phone, countryCode) {
+            let lastError = null;
+            for (let attempt = 0; attempt < MAX_VERIFICATION_ATTEMPTS; attempt += 1) {
+                try {
+                    const verifiedUser = await this.getUser(userId);
+                    if (hasExactlyCanonicalDirectRoutingDid(verifiedUser, phone, countryCode)) return verifiedUser;
+                    lastError = new Error("Genesys did not verify exactly one normalized Direct Routing DID on the user.");
+                } catch (error) {
+                    lastError = error;
+                    if (!isRetryableVerificationError(error)) throw error;
+                }
+                if (attempt < MAX_VERIFICATION_ATTEMPTS - 1) {
+                    await delay(VERIFICATION_RETRY_DELAY_MS * (attempt + 1));
+                }
+            }
+            throw lastError || new Error("Genesys did not verify the Direct Routing DID on the user.");
+        }
+
+        async verifyDirectRoutingDidOnCallRoute(callRouteId, phone) {
+            let lastError = null;
+            for (let attempt = 0; attempt < MAX_VERIFICATION_ATTEMPTS; attempt += 1) {
+                try {
+                    const verifiedCallRoute = await this.getCallRoute(callRouteId);
+                    if (callRouteContainsDid(verifiedCallRoute, phone)) return verifiedCallRoute;
+                    lastError = new Error("Genesys did not verify the Direct Routing DID on the Call Route.");
+                } catch (error) {
+                    lastError = error;
+                    if (!isRetryableVerificationError(error)) throw error;
+                }
+                if (attempt < MAX_VERIFICATION_ATTEMPTS - 1) {
+                    await delay(VERIFICATION_RETRY_DELAY_MS * (attempt + 1));
+                }
+            }
+            throw lastError || new Error("Genesys did not verify the Direct Routing DID on the Call Route.");
+        }
+
         async applyTerritoryAssignment(change) {
             const updatedUsers = [];
             let correlationId = "";
@@ -1366,6 +1771,95 @@
             };
         }
 
+        buildAddDirectRoutingPhonePatch(existingUser, phone, countryCode, replaceExisting) {
+            if (existingUser?.version == null || existingUser.version === "") {
+                throw new Error("Genesys did not return the user's current version. Refresh and try again.");
+            }
+
+            // Preserve every field on unrelated contacts. The endpoint accepts
+            // the complete addresses collection, and stripping unfamiliar fields
+            // here could silently discard contact data maintained elsewhere.
+            let addresses = clone(Array.isArray(existingUser.addresses) ? existingUser.addresses : []);
+            // Direct Routing supports only one PHONE tag. Look across all phone
+            // slots here (not only WORK2) so this module cannot accidentally add
+            // a second directrouting-tagged number to the same user.
+            const existingDirectRoutingAddresses = addresses.filter(isDirectRoutingPhoneContact);
+            const matchingAddresses = existingDirectRoutingAddresses.filter((entry) => {
+                return samePhone(contactAddress(entry), phone);
+            });
+            const matchingAddress = matchingAddresses[0] || null;
+
+            if (existingDirectRoutingAddresses.length === 1
+                && matchingAddresses.length === 1
+                && isCanonicalDirectRoutingDidContact(matchingAddress, phone, countryCode)) {
+                return {
+                    required: false,
+                    patch: { version: existingUser.version, addresses }
+                };
+            }
+
+            // A lone matching DID can be normalized without treating it as a
+            // replacement. A different or duplicate Direct Routing contact still
+            // requires the caller's explicit approval.
+            const canNormalizeExistingMatch = existingDirectRoutingAddresses.length === 1
+                && matchingAddresses.length === 1;
+            if (existingDirectRoutingAddresses.length && !canNormalizeExistingMatch && !replaceExisting) {
+                const existingNumbers = existingDirectRoutingAddresses
+                    .map((entry) => contactAddress(entry))
+                    .filter(Boolean)
+                    .join(", ");
+                throw new Error(`The user already has a different or duplicate Direct Routing phone (${existingNumbers || "unknown"}). Select the replacement option to keep only ${phone}.`);
+            }
+
+            addresses = addresses.filter((entry) => {
+                const isRequestedPhone = isPhoneEntry(entry)
+                    && samePhone(contactAddress(entry), phone);
+                const isDirectRoutingPhone = isDirectRoutingPhoneContact(entry);
+                // Genesys treats a phone address as unique. Replace any existing
+                // entry for the requested DID, and only remove a different Direct
+                // Routing phone after explicit caller approval.
+                return !isRequestedPhone && !(replaceExisting && isDirectRoutingPhone);
+            });
+            addresses.push(makeDirectRoutingDidContact(phone, countryCode));
+            return {
+                required: true,
+                // Do not send primaryContactInfo. It is server-managed on this
+                // endpoint; preserve it by leaving it out of the PATCH body.
+                patch: {
+                    version: existingUser.version,
+                    addresses
+                }
+            };
+        }
+
+        buildCallRouteUpdatePayload(callRoute, phone) {
+            if (!callRoute || typeof callRoute !== "object") {
+                throw new Error("Genesys did not return the selected Call Route.");
+            }
+            if (callRoute.version == null || callRoute.version === "") {
+                throw new Error("Genesys did not return the Call Route's current version. Refresh and try again.");
+            }
+            if (!String(callRoute.name || "").trim()) {
+                throw new Error("Genesys did not return the selected Call Route's name. Refresh and try again.");
+            }
+            if (callRoute.dnis != null && !Array.isArray(callRoute.dnis)) {
+                throw new Error("Genesys returned an invalid Call Route DNIS list. Refresh and try again.");
+            }
+
+            const patch = {};
+            CALL_ROUTE_WRITABLE_FIELDS.forEach((field) => {
+                if (callRoute[field] !== undefined && callRoute[field] !== null) {
+                    patch[field] = clone(callRoute[field]);
+                }
+            });
+            patch.version = callRoute.version;
+            patch.dnis = mergeCallRouteDnis(callRoute.dnis || [], phone);
+            return {
+                required: !callRouteContainsDid(callRoute, phone),
+                patch
+            };
+        }
+
         buildAssignPatch(existingUser, phone) {
             const extensionInfo = this.extractPhoneAndExtension(existingUser);
             if (!extensionInfo.extension || !extensionInfo.hasPrimaryExtension) {
@@ -1411,7 +1905,9 @@
         constructor(config) {
             super(config);
             this.users = readJson(STORAGE.mockUsers, null) || buildMockUsers();
+            this.callRoutes = readJson(STORAGE.mockCallRoutes, null) || buildMockCallRoutes(config);
             writeJson(STORAGE.mockUsers, this.users);
+            writeJson(STORAGE.mockCallRoutes, this.callRoutes);
         }
 
         isAuthenticated() {
@@ -1431,7 +1927,7 @@
         }
 
         async getCurrentUser() {
-            return { id: "mock-admin", name: "Mock Admin", email: "admin@example.com" };
+            return { id: "00000000-0000-4000-8000-000000000099", name: "Mock Admin", email: "admin@example.com" };
         }
 
         async searchUsersByDivision(divisionId, states = ["active"]) {
@@ -1449,6 +1945,59 @@
             const user = this.users[userId];
             if (!user) throw new Error("The Genesys user was not found.");
             return clone(user);
+        }
+
+        async getCallRoute(callRouteId) {
+            await delay(80);
+            const callRoute = this.callRoutes[callRouteId];
+            if (!callRoute) throw new Error("The Genesys Call Route was not found.");
+            return clone(callRoute);
+        }
+
+        async updateUser(userId, patch) {
+            await delay(80);
+            const currentUser = this.users[userId];
+            if (!currentUser) throw new Error("The Genesys user was not found.");
+            if (String(patch?.version) !== String(currentUser.version)) {
+                const error = new Error("Mock Genesys reported a user version conflict.");
+                error.status = 409;
+                error.correlationId = `mock-${crypto.randomUUID()}`;
+                throw error;
+            }
+            if (!Array.isArray(patch?.addresses)) {
+                throw new Error("Mock Genesys requires a complete addresses array for a user update.");
+            }
+            const updatedUser = {
+                ...currentUser,
+                addresses: clone(patch.addresses),
+                version: Number(currentUser.version || 0) + 1
+            };
+            this.users[userId] = updatedUser;
+            writeJson(STORAGE.mockUsers, this.users);
+            return { data: clone(updatedUser), correlationId: `mock-${crypto.randomUUID()}` };
+        }
+
+        async updateCallRoute(callRouteId, patch) {
+            await delay(80);
+            const currentCallRoute = this.callRoutes[callRouteId];
+            if (!currentCallRoute) throw new Error("The Genesys Call Route was not found.");
+            if (String(patch?.version) !== String(currentCallRoute.version)) {
+                const error = new Error("Mock Genesys reported a Call Route version conflict.");
+                error.status = 409;
+                error.correlationId = `mock-${crypto.randomUUID()}`;
+                throw error;
+            }
+            const updatedCallRoute = { ...currentCallRoute };
+            CALL_ROUTE_WRITABLE_FIELDS.forEach((field) => {
+                if (Object.prototype.hasOwnProperty.call(patch || {}, field)) {
+                    updatedCallRoute[field] = clone(patch[field]);
+                }
+            });
+            updatedCallRoute.id = currentCallRoute.id;
+            updatedCallRoute.version = Number(currentCallRoute.version || 0) + 1;
+            this.callRoutes[callRouteId] = updatedCallRoute;
+            writeJson(STORAGE.mockCallRoutes, this.callRoutes);
+            return { data: clone(updatedCallRoute), correlationId: `mock-${crypto.randomUUID()}` };
         }
 
         async applyTerritoryAssignment(change) {
@@ -1632,12 +2181,89 @@
         });
     }
 
+    function hasExactlyCanonicalDirectRoutingDid(user, phone, countryCode) {
+        const directRoutingAddresses = (Array.isArray(user?.addresses) ? user.addresses : [])
+            .filter(isDirectRoutingPhoneContact);
+        return directRoutingAddresses.length === 1
+            && isCanonicalDirectRoutingDidContact(directRoutingAddresses[0], phone, countryCode);
+    }
+
+    function isDirectRoutingPhoneContact(entry) {
+        return isPhoneEntry(entry)
+            && String(entry?.integration || "").toLowerCase() === phoneIntegration();
+    }
+
+    function isCanonicalDirectRoutingDidContact(entry, phone, countryCode) {
+        return isDirectRoutingDidContact(entry)
+            && samePhone(contactAddress(entry), phone)
+            && normalizeCountryCode(entry?.countryCode ?? entry?.country_code) === normalizeCountryCode(countryCode)
+            && String(entry?.display || "").trim() === formatPhoneDisplay(phone);
+    }
+
+    function makeDirectRoutingDidContact(phone, countryCode) {
+        const entry = { mediaType: "PHONE", type: "WORK2", integration: phoneIntegration() };
+        applyDirectRoutingDidFields(entry, phone);
+        entry.countryCode = normalizeCountryCode(countryCode);
+        return entry;
+    }
+
+    function callRouteContainsDid(callRoute, phone) {
+        return (Array.isArray(callRoute?.dnis) ? callRoute.dnis : []).some((entry) => samePhone(entry, phone));
+    }
+
+    function mergeCallRouteDnis(existingDnis, phone) {
+        const dnis = [];
+        const seen = new Set();
+        [...(Array.isArray(existingDnis) ? existingDnis : []), phone].forEach((value) => {
+            const did = String(value ?? "").trim();
+            if (!did) return;
+            const key = isE164Phone(normalizeTerritoryDid(did))
+                ? normalizeTerritoryDid(did)
+                : did.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            dnis.push(did);
+        });
+        return dnis;
+    }
+
     function samePhone(left, right) {
         return phoneInventoryKey(left) === phoneInventoryKey(right);
     }
 
     function isE164Phone(phone) {
         return /^\+[1-9]\d{1,14}$/.test(String(phone || "").trim());
+    }
+
+    function isGenesysUuid(value) {
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || "").trim());
+    }
+
+    function normalizeCountryCode(value) {
+        return String(value || "").trim().toUpperCase();
+    }
+
+    function isCountryCode(value) {
+        return /^[A-Z]{2}$/.test(normalizeCountryCode(value));
+    }
+
+    function configuredCallRouteId() {
+        const configured = String(CONFIG.callRouteId || "").trim();
+        if (configured) return configured;
+        return CONFIG.mockGenesys ? String(CONFIG.mockCallRouteId || DEFAULT_MOCK_CALL_ROUTE_ID).trim() : "";
+    }
+
+    function isConflictError(error) {
+        return Number(error?.status) === 409;
+    }
+
+    function isRetryableVerificationError(error) {
+        const status = Number(error?.status || 0);
+        return !status || status === 408 || status === 409 || status === 429 || status >= 500;
+    }
+
+    function joinCorrelationIds(...correlationIds) {
+        return [...new Set(correlationIds.map((value) => String(value || "").trim()).filter(Boolean))].join(" | ");
     }
 
     function normalizeTerritoryDid(value) {
@@ -1682,7 +2308,7 @@
     }
 
     function phoneCountryCode() {
-        return CONFIG.phoneCountryCode || "US";
+        return normalizeCountryCode(CONFIG.phoneCountryCode || "US");
     }
 
     function phoneIntegration() {
@@ -1699,6 +2325,7 @@
             SCHEDULED: "info",
             APPLYING: "info",
             APPLIED: "success",
+            PARTIAL_SUCCESS: "warning",
             FAILED: "danger",
             CANCELLED: "secondary"
         }[status] || "info";
@@ -1883,14 +2510,36 @@
 
     function buildMockUsers() {
         const users = [
-            mockUser("user-1001", "Avery Johnson", "avery.johnson@example.com", "sales-west", "Sales West", "+14155550101", "4101", 3),
-            mockUser("user-1002", "Morgan Lee", "morgan.lee@example.com", "sales-west", "Sales West", "+14155550102", "4102", 2),
-            mockUser("user-1003", "Priya Shah", "priya.shah@example.com", "sales-west", "Sales West", "+14155550103", "4103", 7),
-            mockUser("user-2001", "Jordan Smith", "jordan.smith@example.com", "sales-east", "Sales East", "+12125550101", "5101", 5),
-            mockUser("user-2002", "Taylor Brown", "taylor.brown@example.com", "sales-east", "Sales East", "+12125550102", "5102", 4),
-            mockUser("user-3001", "Casey Davis", "casey.davis@example.com", "enterprise", "Enterprise Accounts", "+13125550101", "6101", 6)
+            mockUser("00000000-0000-4000-8000-000000000101", "Avery Johnson", "avery.johnson@example.com", "sales-west", "Sales West", "+14155550101", "4101", 3),
+            mockUser("00000000-0000-4000-8000-000000000102", "Morgan Lee", "morgan.lee@example.com", "sales-west", "Sales West", "+14155550102", "4102", 2),
+            mockUser("00000000-0000-4000-8000-000000000103", "Priya Shah", "priya.shah@example.com", "sales-west", "Sales West", "+14155550103", "4103", 7),
+            mockUser("00000000-0000-4000-8000-000000000201", "Jordan Smith", "jordan.smith@example.com", "sales-east", "Sales East", "+12125550101", "5101", 5),
+            mockUser("00000000-0000-4000-8000-000000000202", "Taylor Brown", "taylor.brown@example.com", "sales-east", "Sales East", "+12125550102", "5102", 4),
+            mockUser("00000000-0000-4000-8000-000000000301", "Casey Davis", "casey.davis@example.com", "enterprise", "Enterprise Accounts", "+13125550101", "6101", 6)
         ];
         return Object.fromEntries(users.map((user) => [user.id, user]));
+    }
+
+    function buildMockCallRoutes(config) {
+        const id = isGenesysUuid(config?.mockCallRouteId)
+            ? String(config.mockCallRouteId).trim()
+            : DEFAULT_MOCK_CALL_ROUTE_ID;
+        const configuredDids = Array.isArray(config?.territoryPhoneNumbers)
+            ? config.territoryPhoneNumbers.map((item) => normalizeTerritoryDid(item?.phone || item?.number || ""))
+            : [];
+        const dnis = configuredDids.reduce((result, did) => mergeCallRouteDnis(result, did), []);
+        const divisionId = String(config?.defaultDivisionId || "").trim();
+        const divisionName = config?.allowedDivisions?.find((division) => division.id === divisionId)?.name || divisionId;
+        return {
+            [id]: {
+                id,
+                name: "Mock Direct Routing Call Route",
+                division: divisionId ? { id: divisionId, name: divisionName } : undefined,
+                description: "Mock Call Route used by the Direct Routing phone workflow.",
+                version: 1,
+                dnis
+            }
+        };
     }
 
     function mockUser(id, name, email, divisionId, divisionName, didPhone, extension, version) {

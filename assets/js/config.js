@@ -3,17 +3,27 @@ window.TERRITORY_APP_CONFIG = {
 
     // GitHub Pages is static hosting. This client ID is public by design.
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
-    mockGenesys: false,
+    mockGenesys: true,
     // Production is us_east_1; use us_west_2 for the lab division.
     genesysRegion: "us_east_1",
-    genesysClientId: "d429dee7-4284-4c12-8700-428b15d710de",
+    genesysClientId: "",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",
 
+    // The Architect Call Route (IVR) that should receive new Direct Routing
+    // DIDs. Leave this blank until the production Call Route ID is known; the
+    // live Settings workflow requires a valid ID before making a change.
+    callRouteId: "",
+    // Used only when mockGenesys is true, so the live default above cannot
+    // accidentally point at a sample resource.
+    mockCallRouteId: "00000000-0000-4000-8000-000000000001",
+
     defaultDivisionId: "sales-west",
     allowedDivisions: [
-    { id: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", name: "Sales" }
+        { id: "sales-west", name: "Sales West" },
+        { id: "sales-east", name: "Sales East" },
+        { id: "enterprise", name: "Enterprise Accounts" }
     ],
 
     // Optional DID inventory. These numbers remain visible as territory rows
@@ -21,7 +31,7 @@ window.TERRITORY_APP_CONFIG = {
     // DID preserves the selected user's existing PHONE/WORK extension. Export
     // browser-local additions from Settings and merge them here to share them.
     territoryPhoneNumbers: [
-        { phone: "+19164631708", extension: "1151708", divisionId: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", divisionName: "Sales" },
+        { phone: "+14155550101", extension: "4101", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550102", extension: "4102", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550103", extension: "4103", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550104", extension: "4104", divisionId: "sales-west", divisionName: "Sales West" },

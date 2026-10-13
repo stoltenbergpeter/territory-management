@@ -198,6 +198,7 @@
                             <option value="STAGED">Staged</option>
                             <option value="SCHEDULED">Scheduled</option>
                             <option value="APPLIED">Applied</option>
+                            <option value="PARTIAL_SUCCESS">Partial success</option>
                             <option value="FAILED">Failed</option>
                             <option value="CANCELLED">Cancelled</option>
                         </select>
@@ -247,6 +248,47 @@
         <section class="card app-card mb-4">
             <div class="card-body">
                 <div class="row g-3" id="settingsSummary"></div>
+            </div>
+        </section>
+
+        <section class="card app-card mb-4" id="directRoutingPhoneCard">
+            <div class="card-body">
+                <div>
+                    <h2 class="h5 mb-1">Add Direct Routing Phone</h2>
+                    <p class="text-muted mb-0">Attach an already-provisioned DID to one Genesys user and add it to an Architect Call Route.</p>
+                </div>
+
+                <div class="alert alert-warning small mt-3 mb-3" role="note">
+                    Outside Mock Mode, this is a live Genesys change. The app does not check DID pools. It updates the user's Direct Routing contact first, then appends the DID to the Call Route. An ordinary phone contact using the same DID is converted rather than duplicated. If the Call Route update fails, the user change remains in place and must be retried or resolved manually.
+                </div>
+
+                <form class="row g-3 align-items-end" id="directRoutingPhoneForm">
+                    <div class="col-12 col-xl-4">
+                        <label class="form-label" for="directRoutingUserId">Genesys User ID</label>
+                        <input class="form-control" id="directRoutingUserId" type="text" list="directRoutingUserOptions" autocomplete="off" placeholder="Genesys user UUID" required>
+                        <datalist id="directRoutingUserOptions"></datalist>
+                        <div class="form-text">Choose a loaded user or enter the intended user's UUID.</div>
+                    </div>
+                    <div class="col-12 col-md-6 col-xl-3">
+                        <label class="form-label" for="directRoutingPhoneInput">Direct Routing DID (E.164)</label>
+                        <input class="form-control" id="directRoutingPhoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="+19165551234" pattern="\+[1-9][0-9]{1,14}" required>
+                        <div class="form-text">Country code: <span id="directRoutingCountryCode"></span></div>
+                    </div>
+                    <div class="col-12 col-md-6 col-xl-3">
+                        <label class="form-label" for="directRoutingCallRouteId">Call Route ID</label>
+                        <input class="form-control" id="directRoutingCallRouteId" type="text" autocomplete="off" placeholder="Architect Call Route UUID" required>
+                        <div class="form-text">Configured default may be overridden for this change.</div>
+                    </div>
+                    <div class="col-12 col-xl-2 d-grid">
+                        <button class="btn btn-primary" id="addDirectRoutingPhoneButton" type="submit"><i class="bi bi-person-plus"></i> Add Phone</button>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input class="form-check-input" id="replaceExistingDirectRoutingPhone" type="checkbox">
+                            <label class="form-check-label" for="replaceExistingDirectRoutingPhone">Replace a different existing Direct Routing phone on this user</label>
+                        </div>
+                    </div>
+                </form>
             </div>
         </section>
 

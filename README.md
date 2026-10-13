@@ -11,16 +11,16 @@ This version is intentionally static: `index.html`, `assets/css/styles.css`, `as
 - Genesys API calls from browser JavaScript using the signed-in user's token.
 - Division selector from public config.
 - Phone-number-centered assignment table. The territory phone number is the row identity, and the assigned Genesys user can be changed.
-- Search by phone, extension, assigned user, email, and Genesys user ID.
+- Search by phone, extension, assigned user, email, and Genesys user ID. The Dashboard also shows every loaded `PHONE` profile and primary-contact entry, including ordinary and mobile contacts.
 - Inline assignment edit and local review queue before changes go live.
 - Scheduled effective date/time for each assignment.
-- Safe update flow that preflights the current owner and target versions, requires matching target extension contacts, removes the previous assignee's matching DID when needed, and verifies each change with a final GET.
-- The internal extension remains the user's phone `WORK` address and primary phone contact; a Direct Routing DID is a separate phone `WORK2` address with `integration: "directrouting"`.
-- Updates preserve email addresses, the primary extension, and other unrelated contact entries.
+- Safe paired update flow that preflights current owner and target versions, adds a Direct Routing DID and its tagged extension contact, removes only the prior app-managed pair when needed, and verifies the full pair with a final GET.
+- A Direct Routing DID is a `PHONE` / `WORK2` address with `integration: "directrouting"`. Its extension is a separate, extension-only, `directrouting`-tagged `PHONE` contact in the configured reserved slot (`WORK4` by default), because Genesys does not permit `address` and `extension` on one contact.
+- Updates preserve email addresses, ordinary phone numbers, primary-contact data, and unrelated extensions. The app does not infer ownership from a matching extension value or overwrite an ordinary contact merely because a new DID is added.
 - Mock mode for testing without Genesys credentials.
 - Local browser audit log and CSV export.
 - A separate Settings workflow to attach an already-provisioned Direct Routing DID to one specific user and append it to an Architect Call Route. It uses a current-version user PATCH followed by a current-version Call Route PUT, verifies both writes, retries version conflicts, and records partial success if only the user update completes.
-- Browser-local territory-phone inventory: add an already-provisioned DID, give it an optional display extension, assign it through the existing review flow, and export it for shared deployment.
+- Browser-local territory-phone inventory: add an already-provisioned DID and required extension, assign the pair through the existing review flow, and export it for shared deployment.
 - URL query parameters displayed on the dashboard, with a few known params wired into filters.
 
 ## URL Parameters
@@ -91,6 +91,7 @@ window.TERRITORY_APP_CONFIG = {
     genesysClientId: "YOUR_PUBLIC_PKCE_CLIENT_ID",
     redirectUri: "https://your-org.github.io/territory-management/",
     phoneCountryCode: "US",
+    directRoutingExtensionContactType: "WORK4",
     callRouteId: "YOUR_ARCHITECT_CALL_ROUTE_UUID",
     defaultDivisionId: "YOUR_DIVISION_ID",
     allowedDivisions: [
@@ -104,17 +105,19 @@ window.TERRITORY_APP_CONFIG = {
 
 The client ID is public in a browser app. Never add a client secret.
 
-`territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys. Its optional `extension` value is a display fallback for an unassigned DID; assigning a DID preserves the selected user's existing extension.
+`directRoutingExtensionContactType` reserves an otherwise-unused `PHONE` contact type for the extension half of each Direct Routing pair. The default is `WORK4`; `WORK3` and `OTHER` are supported alternatives. If the chosen slot already contains an ordinary phone or extension, the app stops rather than overwriting it—choose an unused option in configuration or resolve that profile manually.
+
+`territoryPhoneNumbers` is optional but recommended. It lets the app keep known territory numbers visible even when they are currently unassigned in Genesys. Each configured territory DID should include its extension: assigning the DID adds that exact DID-and-extension pair to the selected user.
 
 ## Add a Direct Routing Phone and Call Route DNIS
 
 Use **Settings → Add Direct Routing Phone** when an already-provisioned DID needs to be added to one specific user and to an Architect Call Route:
 
 1. Set `callRouteId` in `assets/js/config.js` to the production Architect Call Route UUID, or enter the route UUID in the form for a one-off change.
-2. Choose a loaded target user or enter the target Genesys user UUID, then enter the DID in exact E.164 format.
+2. Choose a loaded target user or enter the target Genesys user UUID, then enter the DID in exact E.164 format and its required extension.
 3. Confirm the Call Route UUID. The configured `phoneCountryCode` is used for the user's new `PHONE` / `WORK2` / `directrouting` address.
-4. If the user already has a different Direct Routing phone, explicitly select **Replace a different existing Direct Routing phone**. Without that selection, the app blocks the change rather than silently replacing a number.
-5. Review the confirmation. The app first patches the user and then appends the DID to the Call Route's `dnis` list.
+4. If the user already has a different Direct Routing DID, explicitly select **Replace a different existing Direct Routing DID**. Without that selection, the app blocks the change rather than silently replacing the DID.
+5. Review the confirmation. The app first adds the DID-and-extension pair to the user profile, then appends only the DID to the Call Route's `dnis` list.
 
 This workflow deliberately does **not** call a DID-pool API or decide whether a carrier number is available. It only prevents duplicate work on the target user and target Call Route. It sends the user contact update first; if the Call Route update fails afterward, it records `PARTIAL_SUCCESS` in the local audit log and does not automatically roll back the user. Re-run the same request after resolving the Call Route issue: user and route membership checks make the retry safe.
 
@@ -125,7 +128,7 @@ GET/PATCH /api/v2/users/{userId}
 GET/PUT   /api/v2/architect/ivrs/{callRouteId}
 ```
 
-For the user PATCH, the app sends the current `version` and complete current `addresses` list, changing only the Direct Routing entry (or replacing a matching ordinary phone entry that would otherwise duplicate the DID); it intentionally omits the server-managed `primaryContactInfo`. For the Call Route PUT, it starts with a fresh GET and sends only the route's writable fields (`name`, `division`, `description`, `version`, `dnis`, flow references, and `scheduleGroup`) with the DID appended once. Both mutations retry a `409` conflict by re-reading and rebuilding their payloads, then finish with a verifying GET.
+For the user PATCH, the app sends the current `version` and complete current `addresses`, limited to writable contact fields. It adds or updates the direct-routing DID plus its tagged extension contact, without removing ordinary phone or extension entries. `primaryContactInfo` is displayed but not PATCHed because Genesys auto-populates it from `addresses`. For the Call Route PUT, the app starts with a fresh GET and sends only the route's writable fields (`name`, `division`, `description`, `version`, `dnis`, flow references, and `scheduleGroup`) with the **DID only** appended once. Both mutations retry a `409` conflict by re-reading and rebuilding their payloads, then finish with a verifying GET.
 
 ## Add a Territory Phone From Settings
 
@@ -133,11 +136,11 @@ Use **Settings → Browser-Local Territory Inventory** to add an already-provisi
 
 1. Choose a configured division.
 2. Enter the DID in exact E.164 format, such as `+19165551234`.
-3. Optionally enter a display extension. This is shown only while the DID is unassigned; it does not create or change a Genesys extension.
+3. Enter the required extension. It travels with the DID when the assignment is applied.
 4. Select **Add Territory Phone**. The app refreshes permitted owner records before the DID can be staged, then shows the number in the Dashboard for that division.
 5. Select **Export for Deployment**, merge the downloaded JSON entries into `territoryPhoneNumbers` in `assets/js/config.js`, and redeploy to make them shared and authoritative.
 
-The Settings form rejects a DID already in the deployed or browser-local inventory, including one in another division, and it will not re-scope a DID with an open staged, scheduled, applying, or failed assignment. A browser-local row can be removed with confirmation if it has no open assignment; remove and re-add it to correct a typo. Adding inventory makes no Genesys write API call and does not create a Direct Routing DID, provision a carrier number, or create an extension. Do those tasks through your organization's Direct Routing/telephony administration process first. The existing assignment/reassignment flow still requires matching `PHONE` / `WORK` and `PHONE` / `PRIMARY` extension contacts; the separate Add Direct Routing Phone workflow preserves any existing contacts and does not require those extension entries.
+The Settings form rejects a DID already in the deployed or browser-local inventory, including one in another division, and it will not re-scope a DID with an open staged, scheduled, applying, or failed assignment. A browser-local row can be removed with confirmation if it has no open assignment; remove and re-add it to correct a typo. Adding inventory makes no Genesys write API call and does not create a Direct Routing DID, provision a carrier number, or create an extension. Do those tasks through your organization's Direct Routing/telephony administration process first. When an inventory DID is assigned, the app writes a tagged DID contact and a separate tagged extension contact while preserving unrelated contacts.
 
 The app searches active and inactive users in every configured allowed division to locate an existing DID owner before reassignment. User searches set `enforcePermissions: true`; a DID held outside the configured or authorized scope must be cleared by an administrator before it can be reassigned.
 
@@ -153,7 +156,7 @@ The reference's call-forwarding operations are not part of this browser applicat
 
 ## Direct Routing Phone Payload
 
-When applying an assignment, retain the user's internal extension as the `PHONE` / `WORK` address. Retain the primary extension as the `PHONE` / `PRIMARY` entry in `primaryContactInfo`. The DID is a separate `PHONE` / `WORK2` Direct Routing address; the existing assignment/reassignment flow replaces its existing Direct Routing `WORK2` entry instead of adding another one.
+When applying an assignment, the DID and extension are one logical pair, represented by two app-managed profile contacts. The Direct Routing `PHONE` / `WORK2` contact stores the E.164 DID. Its separate extension-only `PHONE` contact uses `integration: "directrouting"` and the configured reserved type (`WORK4` by default). This is required because a Genesys contact cannot contain both `address` and `extension`. Existing ordinary phone numbers and extensions remain in their lists.
 
 ```json
 {
@@ -166,16 +169,16 @@ When applying an assignment, retain the user's internal extension as the `PHONE`
 }
 ```
 
-For example, the extension contacts remain separate from the DID:
+For example, the profile receives a tagged extension contact in addition to the DID contact:
 
 ```json
 {
   "addresses": [
     {
-      "display": "1234567",
       "mediaType": "PHONE",
-      "type": "WORK",
-      "extension": "1234567"
+      "type": "WORK4",
+      "extension": "1234567",
+      "integration": "directrouting"
     },
     {
       "address": "+19164636173",
@@ -185,21 +188,13 @@ For example, the extension contacts remain separate from the DID:
       "countryCode": "US",
       "integration": "directrouting"
     }
-  ],
-  "primaryContactInfo": [
-    {
-      "display": "1234567",
-      "mediaType": "PHONE",
-      "type": "PRIMARY",
-      "extension": "1234567"
-    }
   ]
 }
 ```
 
-Existing email addresses, primary email contacts, and unrelated contacts must remain in their respective lists. Use the current `version` returned by `GET /api/v2/users/{userId}` in the `PATCH /api/v2/users/{userId}` payload, then issue a final GET to verify the assignment. When moving a DID, remove it from the old user before adding it to the new user.
+Existing email addresses, primary contact information, ordinary phone numbers, and unrelated extensions remain in their respective lists. Use the current `version` returned by `GET /api/v2/users/{userId}` in the `PATCH /api/v2/users/{userId}` payload, then issue a final GET to verify the full DID-and-extension pair. When moving a DID, remove only the DID and its `directrouting`-tagged extension contact from the old user before adding it to the new user.
 
-The separate **Add Direct Routing Phone** workflow uses the same DID contact shape, but it sends the narrow `{ version, addresses }` payload only. It does not send `primaryContactInfo`, does not check a DID pool, and requires explicit consent before replacing a different Direct Routing contact on the target user.
+The separate **Add Direct Routing Phone** workflow uses the same paired contact shape and sends `{ version, addresses }`. It does not check a DID pool and requires explicit consent before replacing a different Direct Routing DID on the target user. It adds only the E.164 DID—not the extension—to the Architect Call Route.
 
 ## Run Locally
 

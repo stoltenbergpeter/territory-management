@@ -21,9 +21,10 @@
         audit: "territory.assignmentAudit",
         legacyChanges: "territory.changes",
         legacyAudit: "territory.audit",
-        // v3 fixtures use UUID-shaped IDs and model the extension and Direct Routing DID as separate contacts.
-        mockUsers: "territory.mockUsers.v3",
-        mockCallRoutes: "territory.mockCallRoutes.v1",
+        // v7 fixtures model a DID and its extension as separate, tagged
+        // contacts and include ordinary contacts for visibility testing.
+        mockUsers: "territory.mockUsers.v7",
+        mockCallRoutes: "territory.mockCallRoutes.v3",
         selectedDivision: "territory.selectedDivision",
         localTerritoryPhones: "territory.localTerritoryPhones.v1"
     };
@@ -39,6 +40,19 @@
         "holidayHoursFlow",
         "scheduleGroup"
     ];
+    // Keep the browser PATCH aligned with the writable Contact fields in the
+    // Genesys User model; search/read responses can contain server-managed
+    // fields that must not be sent back.
+    const USER_ADDRESS_WRITABLE_FIELDS = [
+        "address",
+        "display",
+        "mediaType",
+        "type",
+        "extension",
+        "countryCode",
+        "integration"
+    ];
+    const DIRECT_ROUTING_EXTENSION_CONTACT_TYPES = ["WORK3", "WORK4", "OTHER"];
     const MAX_MUTATION_ATTEMPTS = 3;
     const MAX_VERIFICATION_ATTEMPTS = 4;
     const VERIFICATION_RETRY_DELAY_MS = 250;
@@ -139,6 +153,7 @@
         document.getElementById("logoutButton").classList.add("d-none");
         document.getElementById("usersTableBody").innerHTML = `<tr><td colspan="11" class="text-center py-5 text-muted">Sign in to load territory phone assignments.</td></tr>`;
         document.getElementById("usersTableSummary").textContent = "";
+        document.getElementById("userPhoneContactsBody").innerHTML = `<tr><td colspan="4" class="text-center py-4 text-muted">Sign in to load user phone contacts.</td></tr>`;
     }
 
     function initViewSwitcher() {
@@ -377,8 +392,20 @@
             const userGroups = await Promise.all(ownerDivisionIds.map((id) => {
                 return state.service.searchUsersByDivision(id, ["active", "inactive"]);
             }));
-            const ownersById = new Map();
+            const searchedOwnersById = new Map();
             userGroups.flat().forEach((user) => {
+                if (user?.id) searchedOwnersById.set(user.id, user);
+            });
+            // The search endpoint can omit contact collections. Fetch each
+            // permitted user's full profile before rendering phones/extensions
+            // or deciding who currently owns a territory DID.
+            const fullOwnerRecords = await mapWithConcurrency(
+                [...searchedOwnersById.values()],
+                8,
+                (user) => state.service.getUser(user.id)
+            );
+            const ownersById = new Map();
+            fullOwnerRecords.forEach((user) => {
                 const normalized = state.service.normalizeUser(user);
                 if (normalized.id) ownersById.set(normalized.id, normalized);
             });
@@ -414,6 +441,7 @@
                 assignment.current_user_name,
                 assignment.current_user_email,
                 assignment.current_user_id,
+                assignment.current_user_phone_contacts_text,
                 assignment.division_name
             ].join(" ").toLowerCase();
             return !search || haystack.includes(search);
@@ -432,6 +460,52 @@
         document.getElementById("usersTableSummary").textContent = `${filtered.length} territory phones - page ${state.page} of ${totalPages}`;
         document.getElementById("usersPrevButton").disabled = state.page <= 1;
         document.getElementById("usersNextButton").disabled = state.page >= totalPages;
+        renderUserPhoneContacts();
+    }
+
+    function renderUserPhoneContacts() {
+        const body = document.getElementById("userPhoneContactsBody");
+        const search = document.getElementById("userSearchInput").value.trim().toLowerCase();
+        const sourceUsers = state.ownerUsers.length ? state.ownerUsers : state.users;
+        const users = sourceUsers
+            .filter((user) => user.division_id === selectedDivisionId())
+            .filter((user) => {
+                const haystack = [
+                    user.name,
+                    user.email,
+                    user.id,
+                    user.phone_contacts_text
+                ].join(" ").toLowerCase();
+                return !search || haystack.includes(search);
+            })
+            .slice()
+            .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")));
+
+        if (!users.length) {
+            body.innerHTML = `<tr><td colspan="4" class="text-center py-4 text-muted">No loaded users match this division and search.</td></tr>`;
+            return;
+        }
+
+        body.innerHTML = users.map((user) => `
+            <tr>
+                <td><strong>${escapeHtml(user.name || user.id)}</strong><div class="text-muted small">${escapeHtml(user.email || "")}</div></td>
+                <td><code>${escapeHtml(user.id || "")}</code></td>
+                <td>${renderPhoneContactSummary(user.phone_contacts)}</td>
+                <td>${escapeHtml(user.state || "")}</td>
+            </tr>`).join("");
+    }
+
+    function renderPhoneContactSummary(contacts) {
+        const items = Array.isArray(contacts) ? contacts : [];
+        if (!items.length) return `<span class="text-muted small">No phone contacts</span>`;
+        return `<div class="small mt-2 d-flex flex-column gap-1">${items.map((contact) => {
+            const label = [contact.source, contact.type].filter(Boolean).join(" · ");
+            const values = [];
+            if (contact.address) values.push(contact.address);
+            if (contact.extension) values.push(`Ext ${contact.extension}`);
+            if (contact.integration) values.push(contact.integration);
+            return `<div><span class="badge text-bg-light border me-1">${escapeHtml(label || "PHONE")}</span>${escapeHtml(values.join(" · ") || "No number or extension")}</div>`;
+        }).join("")}</div>`;
     }
 
     function renderAssignmentRow(assignment) {
@@ -439,12 +513,12 @@
         const staged = getOpenChangeForPhone(assignment.phone);
         const status = staged ? badge(changeStatusLabel(staged), changeStatusVariant(staged)) : badge(assignment.current_user_id ? "Assigned" : "Unassigned", assignment.current_user_id ? "success" : "secondary");
         const userCell = assignment.current_user_id
-            ? `<strong>${escapeHtml(assignment.current_user_name)}</strong><div class="text-muted small">${escapeHtml(assignment.current_user_email)}</div>`
+            ? `<strong>${escapeHtml(assignment.current_user_name)}</strong><div class="text-muted small">${escapeHtml(assignment.current_user_email)}</div>${renderPhoneContactSummary(assignment.current_user_phone_contacts)}`
             : `<span class="text-muted">Unassigned</span>`;
         const proposedCell = staged
             ? `<strong>${escapeHtml(staged.new_user_name || "Unassigned")}</strong><div class="text-muted small">${escapeHtml(staged.new_user_email || "")}</div>`
             : "";
-        const editControls = isEditing ? renderAssignmentEditControls(assignment) : "";
+        const editControls = isEditing ? renderAssignmentEditControls(assignment, staged) : "";
         const actions = isEditing
             ? `<button class="btn btn-success js-stage" title="Stage"><i class="bi bi-check-lg"></i></button><button class="btn btn-outline-secondary js-cancel-edit" title="Cancel"><i class="bi bi-x-lg"></i></button>`
             : `<button class="btn btn-primary js-edit" title="Assign user"><i class="bi bi-person-gear"></i></button><button class="btn btn-outline-dark js-view-audit" title="View audit"><i class="bi bi-clock-history"></i></button>`;
@@ -465,13 +539,13 @@
             </tr>`;
     }
 
-    function renderAssignmentEditControls(assignment) {
+    function renderAssignmentEditControls(assignment, staged = null) {
         const userOptions = [
             `<option value="">Unassigned</option>`,
             ...state.users
                 .slice()
                 .sort((a, b) => a.name.localeCompare(b.name))
-                .map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === assignment.current_user_id ? "selected" : ""}>${escapeHtml(user.name)} - ${escapeHtml(user.email)}</option>`)
+                .map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === assignment.current_user_id ? "selected" : ""}>${escapeHtml(user.name)} - ${escapeHtml(user.email)}${user.phone_contacts_text ? ` - ${escapeHtml(user.phone_contacts_text)}` : ""}</option>`)
         ].join("");
         const defaultEffectiveAt = toDatetimeLocal(defaultEffectiveAtIso());
         return `
@@ -483,6 +557,12 @@
                 <div class="col-12">
                     <label class="form-label small mb-1" for="effective-${cssId(assignment.phone)}">Go live</label>
                     <input class="form-control form-control-sm js-effective-at" id="effective-${cssId(assignment.phone)}" type="datetime-local" value="${escapeHtml(defaultEffectiveAt)}">
+                </div>
+                <div class="col-12">
+                    <div class="form-check small">
+                        <input class="form-check-input js-replace-existing-pair" id="replace-${cssId(assignment.phone)}" type="checkbox" ${staged?.replace_existing_pair ? "checked" : ""}>
+                        <label class="form-check-label" for="replace-${cssId(assignment.phone)}">Replace a different Direct Routing DID already on the selected user</label>
+                    </div>
                 </div>
             </div>`;
     }
@@ -514,6 +594,7 @@
         const targetUserId = row.querySelector(".js-target-user").value;
         const targetUser = targetUserId ? state.users.find((user) => user.id === targetUserId) : null;
         const effectiveLocal = row.querySelector(".js-effective-at").value;
+        const replaceExistingPair = Boolean(row.querySelector(".js-replace-existing-pair")?.checked);
         const effectiveAt = localDateTimeToIso(effectiveLocal);
 
         if (!state.ownerRecordsCurrent) {
@@ -532,8 +613,14 @@
             showToast("The territory DID must be an E.164 phone number, for example +19165551234.", "danger");
             return;
         }
-        if (targetUserId && (!targetUser.extension || !targetUser.has_primary_extension)) {
-            showToast("The selected user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.", "danger");
+        if (targetUserId && !isConfiguredExtension(assignment.extension)) {
+            showToast("This territory DID needs a valid extension before it can be assigned. Add the extension in Settings or update the configured inventory.", "danger");
+            return;
+        }
+        if (targetUserId
+            && requiresPairedReplacement(targetUser, assignment.phone)
+            && !replaceExistingPair) {
+            showToast("This user already has a different Direct Routing DID. Select the replacement option to stage this paired update.", "warning");
             return;
         }
         if ((targetUser?.id || "") === (assignment.current_user_id || "")) {
@@ -549,7 +636,7 @@
         };
         Object.assign(change, {
             territory_phone: assignment.phone,
-            territory_extension: targetUser?.extension || assignment.extension || "",
+            territory_extension: assignment.extension || "",
             division_id: assignment.division_id,
             division_name: assignment.division_name,
             old_user_id: assignment.current_user_id || "",
@@ -560,6 +647,7 @@
             new_user_name: targetUser?.name || "",
             new_user_email: targetUser?.email || "",
             new_user_version: targetUser?.version || "",
+            replace_existing_pair: replaceExistingPair,
             effective_at: effectiveAt,
             status: isDue(changeWithEffective(effectiveAt)) ? "STAGED" : "SCHEDULED",
             message: isDue(changeWithEffective(effectiveAt)) ? "Ready to apply." : `Scheduled for ${formatDate(effectiveAt)}.`,
@@ -617,9 +705,12 @@
     }
 
     async function applyChangeWithConfirmation(change) {
+        const assignmentDetail = change.new_user_id
+            ? ` This adds ${change.territory_phone} and its paired Direct Routing extension contact (${change.territory_extension}) to ${change.new_user_name || "the selected user"}.${change.replace_existing_pair ? " The explicitly approved existing Direct Routing DID will be replaced if needed." : ""}`
+            : ` This removes ${change.territory_phone} and its app-managed Direct Routing extension contact from the current user.`;
         const result = await confirmAction({
             title: "Apply assignment",
-            message: `Assign ${change.territory_phone} to ${change.new_user_name || "Unassigned"} now?`,
+            message: `Assign ${change.territory_phone} to ${change.new_user_name || "Unassigned"} now?${assignmentDetail} Other phone contacts remain in the profile.`,
             buttonText: "Apply",
             buttonVariant: "success"
         });
@@ -730,6 +821,8 @@
                     current_user_name: "",
                     current_user_email: "",
                     current_user_version: "",
+                    current_user_phone_contacts: [],
+                    current_user_phone_contacts_text: "",
                     last_synced_at: "",
                     source: item.source
                 });
@@ -744,13 +837,18 @@
             if (!configured && user.division_id !== divisionId) return;
             byPhone.set(phone, {
                 phone,
-                extension: user.extension || configured?.extension || "",
+                // Inventory extension is the authoritative extension paired with
+                // a territory DID. Never replace it with an unrelated profile
+                // extension merely because the user has several phone contacts.
+                extension: configured?.extension || user.did_extension || "",
                 division_id: configured?.division_id || user.division_id,
                 division_name: configured?.division_name || user.division_name || divisionName,
                 current_user_id: user.id,
                 current_user_name: user.name,
                 current_user_email: user.email,
                 current_user_version: user.version,
+                current_user_phone_contacts: user.phone_contacts || [],
+                current_user_phone_contacts_text: user.phone_contacts_text || "",
                 last_synced_at: user.last_synced_at,
                 source: configured ? `${configured.source} + Genesys` : "Genesys"
             });
@@ -882,6 +980,7 @@
         user,
         userId,
         phone,
+        extension,
         callRouteId,
         userStatus,
         routeStatus,
@@ -892,7 +991,7 @@
         return {
             operation: "ADD_DIRECT_ROUTING_PHONE",
             territory_phone: phone,
-            territory_extension: normalizedUser.extension || "",
+            territory_extension: extension || normalizedUser.did_extension || "",
             division_id: normalizedUser.division_id || "",
             division_name: normalizedUser.division_name || "",
             old_user_id: "",
@@ -1076,7 +1175,7 @@
         });
         document.getElementById("directRoutingUserOptions").innerHTML = [...suggestions.values()]
             .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")))
-            .map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name || user.id)} — ${escapeHtml(user.email || "")}</option>`)
+            .map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name || user.id)} — ${escapeHtml(user.email || "")}${user.phone_contacts_text ? ` — ${escapeHtml(user.phone_contacts_text)}` : ""}</option>`)
             .join("");
     }
 
@@ -1095,8 +1194,8 @@
             showToast("Enter the territory DID in E.164 format, for example +19165551234.", "danger");
             return;
         }
-        if (!isValidInventoryExtension(rawExtension)) {
-            showToast("The display extension can contain up to 32 characters and cannot contain line breaks.", "danger");
+        if (!isConfiguredExtension(rawExtension)) {
+            showToast("Enter an extension of up to 32 characters without line breaks.", "danger");
             return;
         }
         if (territoryPhoneInventory().some((item) => samePhone(item.phone, phone))) {
@@ -1144,6 +1243,8 @@
         const userId = String(document.getElementById("directRoutingUserId").value || "").trim();
         const phoneInput = document.getElementById("directRoutingPhoneInput");
         const phone = normalizeTerritoryDid(phoneInput.value);
+        const extensionInput = document.getElementById("directRoutingExtensionInput");
+        const extension = normalizeInventoryExtension(extensionInput.value);
         const callRouteId = String(document.getElementById("directRoutingCallRouteId").value || "").trim();
         const countryCode = normalizeCountryCode(phoneCountryCode());
         const replaceExisting = document.getElementById("replaceExistingDirectRoutingPhone").checked;
@@ -1160,6 +1261,10 @@
             showToast("Enter the Direct Routing DID in E.164 format, for example +19165551234.", "danger");
             return;
         }
+        if (!isConfiguredExtension(extensionInput.value)) {
+            showToast("Enter the extension that belongs with this Direct Routing DID.", "danger");
+            return;
+        }
         if (!isGenesysUuid(callRouteId)) {
             showToast("Enter the Architect Call Route ID as a UUID.", "danger");
             return;
@@ -1170,9 +1275,10 @@
         }
 
         phoneInput.value = phone;
+        extensionInput.value = extension;
         const confirmation = await confirmAction({
             title: "Add Direct Routing phone",
-            message: `Add ${phone} to user ${userId} and Call Route ${callRouteId}? The app will not check DID pools. If that DID is already an ordinary user phone contact, it will be converted instead of duplicated. The app updates the user first and then the Call Route; a Call Route failure leaves the user change in place without automatic rollback.`,
+            message: `Add DID ${phone} and extension ${extension} to user ${userId}, then add only the DID to Call Route ${callRouteId}? The app will not check DID pools. The app updates the user first and then the Call Route; a Call Route failure leaves the user profile change in place without automatic rollback.`,
             buttonText: "Add Phone",
             buttonVariant: "primary"
         });
@@ -1186,6 +1292,7 @@
             const result = await state.service.addDirectRoutingPhoneAndUpdateCallRoute({
                 userId,
                 phone,
+                extension,
                 countryCode,
                 callRouteId,
                 replaceExisting
@@ -1195,6 +1302,7 @@
                 user: result.user,
                 userId,
                 phone,
+                extension,
                 callRouteId,
                 userStatus: result.userStatus,
                 routeStatus: result.routeStatus,
@@ -1207,9 +1315,10 @@
                 `User contact ${directRoutingStatusText(result.userStatus)}; Call Route ${callRouteId} DNIS ${directRoutingStatusText(result.routeStatus)}.`
             );
             document.getElementById("directRoutingPhoneInput").value = "";
+            document.getElementById("directRoutingExtensionInput").value = "";
             document.getElementById("replaceExistingDirectRoutingPhone").checked = false;
             renderAssignments();
-            showToast(`Added ${phone} to the user and Call Route.`, "success");
+            showToast(`Added DID ${phone} and extension ${extension} to the user; added the DID to the Call Route.`, "success");
         } catch (error) {
             const updatedUser = error.updatedUser || null;
             if (updatedUser) replaceUser(updatedUser);
@@ -1221,6 +1330,7 @@
                 user: updatedUser,
                 userId,
                 phone,
+                extension,
                 callRouteId,
                 userStatus: error.userStatus || "FAILED",
                 routeStatus,
@@ -1440,9 +1550,11 @@
             return this.request("PUT", `/api/v2/architect/ivrs/${encodeURIComponent(callRouteId)}`, patch);
         }
 
-        async addDirectRoutingPhoneAndUpdateCallRoute({ userId, phone, countryCode, callRouteId, replaceExisting = false }) {
+        async addDirectRoutingPhoneAndUpdateCallRoute({ userId, phone, extension, countryCode, callRouteId, replaceExisting = false }) {
             const normalizedUserId = String(userId || "").trim();
             const normalizedPhone = normalizeTerritoryDid(phone);
+            const suppliedExtension = String(extension ?? "");
+            const normalizedExtension = normalizeInventoryExtension(extension);
             const normalizedCountryCode = normalizeCountryCode(countryCode);
             const normalizedCallRouteId = String(callRouteId || "").trim();
 
@@ -1451,6 +1563,9 @@
             }
             if (!isE164Phone(normalizedPhone)) {
                 throw new Error("The Direct Routing DID must be an E.164 phone number, for example +19165551234.");
+            }
+            if (!isConfiguredExtension(suppliedExtension)) {
+                throw new Error("The Direct Routing extension is required and must be no more than 32 characters.");
             }
             if (!isCountryCode(normalizedCountryCode)) {
                 throw new Error("The Direct Routing phone country code must be a two-letter ISO country code.");
@@ -1466,7 +1581,7 @@
                 this.getUser(normalizedUserId),
                 this.getCallRoute(normalizedCallRouteId)
             ]);
-            this.buildAddDirectRoutingPhonePatch(initialUser, normalizedPhone, normalizedCountryCode, Boolean(replaceExisting));
+            this.buildAddDirectRoutingPhonePatch(initialUser, normalizedPhone, normalizedExtension, normalizedCountryCode, Boolean(replaceExisting));
             this.buildCallRouteUpdatePayload(initialCallRoute, normalizedPhone);
 
             let userResult;
@@ -1474,6 +1589,7 @@
                 userResult = await this.ensureDirectRoutingPhoneOnUser(
                     normalizedUserId,
                     normalizedPhone,
+                    normalizedExtension,
                     normalizedCountryCode,
                     Boolean(replaceExisting),
                     initialUser
@@ -1514,13 +1630,13 @@
             }
         }
 
-        async ensureDirectRoutingPhoneOnUser(userId, phone, countryCode, replaceExisting, initialUser = null) {
+        async ensureDirectRoutingPhoneOnUser(userId, phone, extension, countryCode, replaceExisting, initialUser = null) {
             let currentUser = initialUser;
             let writeCorrelationId = "";
 
             for (let attempt = 0; attempt < MAX_MUTATION_ATTEMPTS; attempt += 1) {
                 if (!currentUser) currentUser = await this.getUser(userId);
-                const plan = this.buildAddDirectRoutingPhonePatch(currentUser, phone, countryCode, replaceExisting);
+                const plan = this.buildAddDirectRoutingPhonePatch(currentUser, phone, extension, countryCode, replaceExisting);
                 if (!plan.required) {
                     return { user: currentUser, status: "UNCHANGED", correlationId: writeCorrelationId };
                 }
@@ -1532,7 +1648,7 @@
                     updatedUser = response.data || null;
                     writeCorrelationId = response.correlationId || writeCorrelationId;
                     userUpdateCompleted = true;
-                    const verifiedUser = await this.verifyDirectRoutingPhoneOnUser(userId, phone, countryCode);
+                    const verifiedUser = await this.verifyDirectRoutingPhoneOnUser(userId, phone, extension, countryCode);
                     return { user: verifiedUser, status: "UPDATED", correlationId: writeCorrelationId };
                 } catch (error) {
                     if (userUpdateCompleted) {
@@ -1592,13 +1708,13 @@
             throw new Error("Genesys could not update the Call Route after repeated conflicts.");
         }
 
-        async verifyDirectRoutingPhoneOnUser(userId, phone, countryCode) {
+        async verifyDirectRoutingPhoneOnUser(userId, phone, extension, countryCode) {
             let lastError = null;
             for (let attempt = 0; attempt < MAX_VERIFICATION_ATTEMPTS; attempt += 1) {
                 try {
                     const verifiedUser = await this.getUser(userId);
-                    if (hasExactlyCanonicalDirectRoutingDid(verifiedUser, phone, countryCode)) return verifiedUser;
-                    lastError = new Error("Genesys did not verify exactly one normalized Direct Routing DID on the user.");
+                    if (hasExactlyCanonicalDirectRoutingDid(verifiedUser, phone, extension, countryCode)) return verifiedUser;
+                    lastError = new Error("Genesys did not verify the requested Direct Routing DID-and-extension pair on the user.");
                 } catch (error) {
                     lastError = error;
                     if (!isRetryableVerificationError(error)) throw error;
@@ -1631,10 +1747,14 @@
         async applyTerritoryAssignment(change) {
             const updatedUsers = [];
             let correlationId = "";
+            const territoryExtension = normalizeInventoryExtension(change.territory_extension);
 
             try {
                 if (!isE164Phone(change.territory_phone)) {
                     throw new Error("The territory DID must be an E.164 phone number, for example +19165551234.");
+                }
+                if (change.new_user_id && !isConfiguredExtension(change.territory_extension)) {
+                    throw new Error("This staged territory change has no valid extension. Re-stage it from inventory so the DID-and-extension pair can be updated safely.");
                 }
                 // Fetch and validate both versions before releasing a DID from its owner.
                 const oldLatest = change.old_user_id ? await this.getUser(change.old_user_id) : null;
@@ -1650,10 +1770,20 @@
                     if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
                         throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
                     }
-                    const targetContacts = this.extractPhoneAndExtension(newLatest);
-                    if (!targetContacts.extension || !targetContacts.hasPrimaryExtension) {
-                        throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+                    if (requiresPairedReplacement(newLatest, change.territory_phone)
+                        && !Boolean(change.replace_existing_pair)) {
+                        throw new Error("The target user now has a different Direct Routing DID. Refresh and stage the assignment again with the replacement option selected.");
                     }
+                    // Validate the full target patch before removing the DID
+                    // from its current owner (including the reserved extension
+                    // contact slot), so a target-profile conflict cannot leave
+                    // an avoidable partial reassignment.
+                    this.buildAssignPatch(
+                        newLatest,
+                        change.territory_phone,
+                        territoryExtension,
+                        Boolean(change.replace_existing_pair)
+                    );
                 }
 
                 if (oldLatest && change.old_user_id !== change.new_user_id && hasDirectRoutingDid(oldLatest, change.territory_phone)) {
@@ -1662,20 +1792,26 @@
                     correlationId = clearCorrelationId || correlationId;
                     upsertUpdatedUser(updatedUsers, clearedUser);
                     const verifiedOldUser = await this.getUser(change.old_user_id);
-                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)) {
-                        throw new Error("Genesys did not remove the Direct Routing DID from the previous user. Refresh and try again.");
+                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)
+                        || directRoutingExtensionSlotsForUser(verifiedOldUser).length) {
+                        throw new Error("Genesys did not remove the Direct Routing DID-and-extension pair from the previous user. Refresh and try again.");
                     }
                     upsertUpdatedUser(updatedUsers, verifiedOldUser);
                 }
 
                 if (newLatest) {
-                    const patch = this.buildAssignPatch(newLatest, change.territory_phone);
+                    const patch = this.buildAssignPatch(
+                        newLatest,
+                        change.territory_phone,
+                        territoryExtension,
+                        Boolean(change.replace_existing_pair)
+                    );
                     const { data: assignedUser, correlationId: assignCorrelationId } = await this.request("PATCH", `/api/v2/users/${encodeURIComponent(change.new_user_id)}`, patch);
                     correlationId = assignCorrelationId || correlationId;
                     upsertUpdatedUser(updatedUsers, assignedUser);
                     const verifiedNewUser = await this.getUser(change.new_user_id);
-                    if (!hasDirectRoutingDid(verifiedNewUser, change.territory_phone)) {
-                        throw new Error("Genesys did not verify the Direct Routing DID on the assigned user. Refresh and try again.");
+                    if (!hasTerritoryPhonePair(verifiedNewUser, change.territory_phone, territoryExtension)) {
+                        throw new Error("Genesys did not verify the Direct Routing DID-and-extension pair on the assigned user. Refresh and try again.");
                     }
                     upsertUpdatedUser(updatedUsers, verifiedNewUser);
                 }
@@ -1749,8 +1885,14 @@
                 addresses: clone(user.addresses || []),
                 primaryContactInfo: clone(user.primaryContactInfo || []),
                 did_phone: phoneInfo.didPhone,
-                extension: phoneInfo.extension,
-                has_primary_extension: phoneInfo.hasPrimaryExtension,
+                did_extension: phoneInfo.didExtension,
+                work_extension: phoneInfo.workExtension,
+                primary_extension: phoneInfo.primaryExtension,
+                // Retain a compact compatibility value for older views/audit
+                // records, while the UI uses the full contact collection below.
+                extension: phoneInfo.didExtension || phoneInfo.workExtension || phoneInfo.primaryExtension,
+                phone_contacts: phoneInfo.phoneContacts,
+                phone_contacts_text: phoneInfo.phoneContacts.map(phoneContactText).join(" "),
                 last_synced_at: new Date().toISOString()
             };
         }
@@ -1758,73 +1900,81 @@
         extractPhoneAndExtension(user) {
             const primary = Array.isArray(user.primaryContactInfo) ? user.primaryContactInfo : [];
             const addresses = Array.isArray(user.addresses) ? user.addresses : [];
-            const extensionContact = findExtensionContact(addresses, ["work"]);
-            const extension = contactExtension(extensionContact);
-            const primaryExtensionContact = extension
-                ? findExtensionContact(primary, ["primary"], extension)
-                : null;
+            const workExtensionContact = findPhoneContactWithExtension(addresses, "work");
+            const primaryExtensionContact = findPhoneContactWithExtension(primary, "primary");
             const didContact = findDirectRoutingDidContact(addresses);
             return {
                 didPhone: contactAddress(didContact),
-                extension,
-                hasPrimaryExtension: Boolean(primaryExtensionContact)
+                didExtension: directRoutingExtensionForUser(user) || contactExtension(didContact),
+                workExtension: contactExtension(workExtensionContact),
+                primaryExtension: contactExtension(primaryExtensionContact),
+                phoneContacts: collectUserPhoneContacts(user)
             };
         }
 
-        buildAddDirectRoutingPhonePatch(existingUser, phone, countryCode, replaceExisting) {
+        buildAddDirectRoutingPhonePatch(existingUser, phone, extension, countryCode, replaceExisting) {
             if (existingUser?.version == null || existingUser.version === "") {
                 throw new Error("Genesys did not return the user's current version. Refresh and try again.");
             }
+            if (!isConfiguredExtension(extension)) {
+                throw new Error("The Direct Routing extension is required and must be no more than 32 characters.");
+            }
+            const normalizedExtension = normalizeInventoryExtension(extension);
 
-            // Preserve every field on unrelated contacts. The endpoint accepts
-            // the complete addresses collection, and stripping unfamiliar fields
-            // here could silently discard contact data maintained elsewhere.
+            // Work with the complete collection so unrelated user contacts are
+            // retained. The final PATCH is reduced to writable Contact fields.
             let addresses = clone(Array.isArray(existingUser.addresses) ? existingUser.addresses : []);
-            // Direct Routing supports only one PHONE tag. Look across all phone
-            // slots here (not only WORK2) so this module cannot accidentally add
-            // a second directrouting-tagged number to the same user.
-            const existingDirectRoutingAddresses = addresses.filter(isDirectRoutingPhoneContact);
-            const matchingAddresses = existingDirectRoutingAddresses.filter((entry) => {
+            assertDirectRoutingContactShape(addresses);
+            const existingDirectRoutingDids = addresses.filter(isDirectRoutingDidContact);
+            if (existingDirectRoutingDids.length > 1) {
+                throw new Error("The user has multiple Direct Routing DIDs. Resolve that profile manually before adding or replacing a DID.");
+            }
+            const matchingAddresses = existingDirectRoutingDids.filter((entry) => {
                 return samePhone(contactAddress(entry), phone);
             });
             const matchingAddress = matchingAddresses[0] || null;
 
-            if (existingDirectRoutingAddresses.length === 1
+            if (existingDirectRoutingDids.length === 1
                 && matchingAddresses.length === 1
-                && isCanonicalDirectRoutingDidContact(matchingAddress, phone, countryCode)) {
+                && isCanonicalDirectRoutingDidContact(matchingAddress, phone, countryCode)
+                && hasDirectRoutingExtensionContact(existingUser, normalizedExtension)) {
                 return {
                     required: false,
                     patch: { version: existingUser.version, addresses }
                 };
             }
 
-            // A lone matching DID can be normalized without treating it as a
-            // replacement. A different or duplicate Direct Routing contact still
-            // requires the caller's explicit approval.
-            const canNormalizeExistingMatch = existingDirectRoutingAddresses.length === 1
+            const hasMatchingDirectRoutingDid = existingDirectRoutingDids.length === 1
                 && matchingAddresses.length === 1;
-            if (existingDirectRoutingAddresses.length && !canNormalizeExistingMatch && !replaceExisting) {
-                const existingNumbers = existingDirectRoutingAddresses
+            // A phone contact cannot contain both an address and an extension.
+            // The matching extension is therefore stored in a separate
+            // app-managed Direct Routing contact. A different DID still needs
+            // explicit replacement approval.
+            if (existingDirectRoutingDids.length
+                && !hasMatchingDirectRoutingDid
+                && !replaceExisting) {
+                const existingNumbers = existingDirectRoutingDids
                     .map((entry) => contactAddress(entry))
                     .filter(Boolean)
                     .join(", ");
-                throw new Error(`The user already has a different or duplicate Direct Routing phone (${existingNumbers || "unknown"}). Select the replacement option to keep only ${phone}.`);
+                throw new Error("The user already has a different Direct Routing DID ("
+                    + (existingNumbers || "unknown")
+                    + "). Select the replacement option to use the requested DID and extension.");
             }
 
             addresses = addresses.filter((entry) => {
                 const isRequestedPhone = isPhoneEntry(entry)
                     && samePhone(contactAddress(entry), phone);
-                const isDirectRoutingPhone = isDirectRoutingPhoneContact(entry);
+                const isDirectRoutingDid = isDirectRoutingDidContact(entry);
                 // Genesys treats a phone address as unique. Replace any existing
                 // entry for the requested DID, and only remove a different Direct
                 // Routing phone after explicit caller approval.
-                return !isRequestedPhone && !(replaceExisting && isDirectRoutingPhone);
+                return !isRequestedPhone && !(replaceExisting && isDirectRoutingDid);
             });
             addresses.push(makeDirectRoutingDidContact(phone, countryCode));
+            addresses = upsertDirectRoutingExtensionContact(addresses, normalizedExtension);
             return {
                 required: true,
-                // Do not send primaryContactInfo. It is server-managed on this
-                // endpoint; preserve it by leaving it out of the PATCH body.
                 patch: {
                     version: existingUser.version,
                     addresses
@@ -1860,31 +2010,54 @@
             };
         }
 
-        buildAssignPatch(existingUser, phone) {
-            const extensionInfo = this.extractPhoneAndExtension(existingUser);
-            if (!extensionInfo.extension || !extensionInfo.hasPrimaryExtension) {
-                throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+        buildAssignPatch(existingUser, phone, extension, replaceExisting = false) {
+            if (!isConfiguredExtension(extension)) {
+                throw new Error("The territory DID needs a valid extension before it can be assigned.");
             }
-
+            const normalizedExtension = normalizeInventoryExtension(extension);
             let addresses = clone(existingUser.addresses || []);
+            assertDirectRoutingContactShape(addresses);
             const existingDids = addresses.filter(isDirectRoutingDidContact);
-            let didContact = existingDids.find((entry) => samePhone(contactAddress(entry), phone)) || existingDids[0];
-            if (didContact) {
-                // Keep one Direct Routing WORK2 entry and replace its DID instead of adding another.
-                addresses = addresses.filter((entry) => entry === didContact || !isDirectRoutingDidContact(entry));
-            } else {
-                didContact = { mediaType: "PHONE", type: "WORK2", integration: phoneIntegration() };
-                addresses.push(didContact);
+            if (existingDids.length > 1) {
+                throw new Error("The target user has multiple Direct Routing DIDs. Resolve that profile manually before assigning a DID.");
             }
-            applyDirectRoutingDidFields(didContact, phone);
+            if (requiresPairedReplacement(existingUser, phone) && !replaceExisting) {
+                throw new Error("The target user already has a different Direct Routing DID. Stage the assignment again with the replacement option selected.");
+            }
+            // Replace only the requested DID, plus any previous Direct Routing
+            // DID for which the reviewer explicitly approved replacement.
+            // All ordinary and non-app-managed extension contacts remain intact.
+            addresses = addresses.filter((entry) => {
+                const isRequestedPhone = isPhoneEntry(entry)
+                    && samePhone(contactAddress(entry), phone);
+                return !isRequestedPhone && !(replaceExisting && isDirectRoutingDidContact(entry));
+            });
+            addresses.push(makeDirectRoutingDidContact(phone, phoneCountryCode()));
+            addresses = upsertDirectRoutingExtensionContact(addresses, normalizedExtension);
 
             return this.buildContactPatch(existingUser, addresses);
         }
 
         buildClearPhonePatch(existingUser, phone) {
-            const addresses = clone(existingUser.addresses || []).filter((entry) => {
+            const currentAddresses = Array.isArray(existingUser?.addresses) ? existingUser.addresses : [];
+            assertDirectRoutingContactShape(currentAddresses);
+            const directRoutingDids = currentAddresses
+                .filter(isDirectRoutingDidContact);
+            if (directRoutingDids.length > 1) {
+                throw new Error("The current user has multiple Direct Routing DIDs. Resolve that profile manually before moving or unassigning one.");
+            }
+            const extensionSlots = currentAddresses.filter(isDirectRoutingExtensionSlot);
+            if (extensionSlots.length > 1) {
+                throw new Error("The current user has multiple app-managed Direct Routing extension contacts. Resolve that profile manually before moving or unassigning the DID.");
+            }
+            let addresses = clone(existingUser.addresses || []).filter((entry) => {
                 return !isDirectRoutingDidContact(entry) || !samePhone(contactAddress(entry), phone);
             });
+            // Only remove the extension contact explicitly tagged as belonging
+            // to Direct Routing. A legacy DID may not have this contact yet;
+            // in that case remove only the DID rather than guessing ownership
+            // from an ordinary user's extension.
+            addresses = removeDirectRoutingExtensionContacts(addresses);
             return this.buildContactPatch(existingUser, addresses);
         }
 
@@ -1892,11 +2065,11 @@
             if (existingUser?.version == null || existingUser.version === "") {
                 throw new Error("Genesys did not return the user's current version. Refresh and try again.");
             }
-            // Browser REST uses camelCase; the Python SDK equivalent is UpdateUser.primary_contact_info.
+            // Only send writable address fields. primaryContactInfo is retained
+            // in the UI for visibility but is not PATCHed by this workflow.
             return {
                 version: existingUser.version,
-                addresses,
-                primaryContactInfo: clone(existingUser.primaryContactInfo || [])
+                addresses: sanitizeUserAddresses(addresses)
             };
         }
     }
@@ -1970,6 +2143,7 @@
             const updatedUser = {
                 ...currentUser,
                 addresses: clone(patch.addresses),
+                primaryContactInfo: clone(currentUser.primaryContactInfo || []),
                 version: Number(currentUser.version || 0) + 1
             };
             this.users[userId] = updatedUser;
@@ -2002,9 +2176,13 @@
 
         async applyTerritoryAssignment(change) {
             const updatedUsers = [];
+            const territoryExtension = normalizeInventoryExtension(change.territory_extension);
             try {
                 if (!isE164Phone(change.territory_phone)) {
                     throw new Error("The territory DID must be an E.164 phone number, for example +19165551234.");
+                }
+                if (change.new_user_id && !isConfiguredExtension(change.territory_extension)) {
+                    throw new Error("This staged territory change has no valid extension. Re-stage it from inventory so the DID-and-extension pair can be updated safely.");
                 }
                 const oldLatest = change.old_user_id ? await this.getUser(change.old_user_id) : null;
                 const newLatest = change.new_user_id ? await this.getUser(change.new_user_id) : null;
@@ -2019,10 +2197,16 @@
                     if (change.new_user_version && newBefore.version && String(change.new_user_version) !== String(newBefore.version)) {
                         throw new Error("The target user changed since this assignment was staged. Refresh from Genesys and stage it again.");
                     }
-                    const targetContacts = this.extractPhoneAndExtension(newLatest);
-                    if (!targetContacts.extension || !targetContacts.hasPrimaryExtension) {
-                        throw new Error("The target user needs matching PHONE/WORK and PHONE/PRIMARY extension contacts before a Direct Routing DID can be assigned.");
+                    if (requiresPairedReplacement(newLatest, change.territory_phone)
+                        && !Boolean(change.replace_existing_pair)) {
+                        throw new Error("The target user now has a different Direct Routing DID. Refresh and stage the assignment again with the replacement option selected.");
                     }
+                    this.buildAssignPatch(
+                        newLatest,
+                        change.territory_phone,
+                        territoryExtension,
+                        Boolean(change.replace_existing_pair)
+                    );
                 }
 
                 if (oldLatest && change.old_user_id !== change.new_user_id && hasDirectRoutingDid(oldLatest, change.territory_phone)) {
@@ -2034,8 +2218,9 @@
                     this.users[change.old_user_id] = oldUpdated;
                     upsertUpdatedUser(updatedUsers, oldUpdated);
                     const verifiedOldUser = await this.getUser(change.old_user_id);
-                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)) {
-                        throw new Error("Mock Genesys did not remove the Direct Routing DID from the previous user.");
+                    if (hasDirectRoutingDid(verifiedOldUser, change.territory_phone)
+                        || directRoutingExtensionSlotsForUser(verifiedOldUser).length) {
+                        throw new Error("Mock Genesys did not remove the Direct Routing DID-and-extension pair from the previous user.");
                     }
                     upsertUpdatedUser(updatedUsers, verifiedOldUser);
                 }
@@ -2043,14 +2228,19 @@
                 if (newLatest) {
                     const newUpdated = {
                         ...newLatest,
-                        ...this.buildAssignPatch(newLatest, change.territory_phone),
+                        ...this.buildAssignPatch(
+                            newLatest,
+                            change.territory_phone,
+                            territoryExtension,
+                            Boolean(change.replace_existing_pair)
+                        ),
                         version: Number(newLatest.version || 0) + 1
                     };
                     this.users[change.new_user_id] = newUpdated;
                     upsertUpdatedUser(updatedUsers, newUpdated);
                     const verifiedNewUser = await this.getUser(change.new_user_id);
-                    if (!hasDirectRoutingDid(verifiedNewUser, change.territory_phone)) {
-                        throw new Error("Mock Genesys did not verify the Direct Routing DID on the assigned user.");
+                    if (!hasTerritoryPhonePair(verifiedNewUser, change.territory_phone, territoryExtension)) {
+                        throw new Error("Mock Genesys did not verify the Direct Routing DID-and-extension pair on the assigned user.");
                     }
                     upsertUpdatedUser(updatedUsers, verifiedNewUser);
                 }
@@ -2155,24 +2345,207 @@
         return extension ? String(extension).trim() : "";
     }
 
-    function findExtensionContact(entries, acceptedTypes, expectedExtension = "") {
-        return entries.find((entry) => {
+    function findPhoneContactWithExtension(entries, type, expectedExtension = "") {
+        const expected = expectedExtension ? normalizeInventoryExtension(expectedExtension) : "";
+        return (Array.isArray(entries) ? entries : []).find((entry) => {
             return isPhoneEntry(entry)
-                && contactExtension(entry)
-                && !isE164Phone(contactAddress(entry))
-                && (!acceptedTypes.length || acceptedTypes.includes(entryType(entry)))
-                && (!expectedExtension || contactExtension(entry) === expectedExtension);
+                && entryType(entry) === String(type || "").toLowerCase()
+                && Boolean(contactExtension(entry))
+                && (!expected || contactExtension(entry) === expected);
         }) || null;
+    }
+
+    function hasTerritoryPhonePair(user, phone, extension) {
+        const normalizedExtension = normalizeInventoryExtension(extension);
+        return hasDirectRoutingExtensionContact(user, normalizedExtension)
+            && (Array.isArray(user?.addresses) ? user.addresses : []).some((entry) => {
+                return isDirectRoutingDidContact(entry)
+                    && samePhone(contactAddress(entry), phone)
+                    && !contactExtension(entry);
+            });
+    }
+
+    function directRoutingContactForPhone(user, phone) {
+        return (Array.isArray(user?.addresses) ? user.addresses : []).find((entry) => {
+            return isDirectRoutingDidContact(entry) && samePhone(contactAddress(entry), phone);
+        }) || null;
+    }
+
+    function requiresPairedReplacement(user, phone) {
+        const directRoutingPhones = (Array.isArray(user?.addresses) ? user.addresses : [])
+            .filter(isDirectRoutingDidContact);
+        return directRoutingPhones.length > 1
+            || directRoutingPhones.some((entry) => !samePhone(contactAddress(entry), phone));
+    }
+
+    function directRoutingExtensionContactType() {
+        const type = String(CONFIG.directRoutingExtensionContactType || "WORK4").trim().toUpperCase();
+        if (!DIRECT_ROUTING_EXTENSION_CONTACT_TYPES.includes(type)) {
+            throw new Error("Configure directRoutingExtensionContactType as WORK3, WORK4, or OTHER before assigning Direct Routing extensions.");
+        }
+        return type;
+    }
+
+    function isDirectRoutingExtensionSlot(entry) {
+        return isPhoneEntry(entry)
+            && String(entry?.integration || "").toLowerCase() === phoneIntegration()
+            && !contactAddress(entry)
+            && DIRECT_ROUTING_EXTENSION_CONTACT_TYPES.includes(String(entry?.type || "").toUpperCase());
+    }
+
+    function isDirectRoutingExtensionContact(entry) {
+        return isDirectRoutingExtensionSlot(entry) && isConfiguredExtension(contactExtension(entry));
+    }
+
+    function directRoutingExtensionForUser(user) {
+        const contact = directRoutingExtensionSlotsForUser(user)[0] || null;
+        return contactExtension(contact);
+    }
+
+    function directRoutingExtensionSlotsForUser(user) {
+        return (Array.isArray(user?.addresses) ? user.addresses : [])
+            .filter(isDirectRoutingExtensionSlot);
+    }
+
+    function hasDirectRoutingExtensionContact(user, extension) {
+        const normalizedExtension = normalizeInventoryExtension(extension);
+        const extensionSlots = directRoutingExtensionSlotsForUser(user);
+        return isConfiguredExtension(normalizedExtension)
+            && extensionSlots.length === 1
+            && contactExtension(extensionSlots[0]) === normalizedExtension;
+    }
+
+    function upsertDirectRoutingExtensionContact(entries, extension) {
+        const normalizedExtension = normalizeInventoryExtension(extension);
+        if (!isConfiguredExtension(normalizedExtension)) {
+            throw new Error("The extension is required and must be no more than 32 characters.");
+        }
+
+        const contacts = clone(Array.isArray(entries) ? entries : []);
+        const extensionSlots = contacts.filter(isDirectRoutingExtensionSlot);
+        if (extensionSlots.length > 1) {
+            throw new Error("The user has multiple app-managed Direct Routing extension contacts. Resolve those contacts manually before changing the DID.");
+        }
+
+        let contact = extensionSlots[0] || null;
+        if (!contact) {
+            const slotType = directRoutingExtensionContactType();
+            const occupiedContact = contacts.find((entry) => {
+                return isPhoneEntry(entry)
+                    && entryType(entry) === slotType.toLowerCase()
+                    && !isDirectRoutingExtensionSlot(entry);
+            });
+            if (occupiedContact) {
+                throw new Error("The reserved " + slotType
+                    + " phone-contact slot is already used by an ordinary profile contact. "
+                    + "Choose another directRoutingExtensionContactType or free that slot; the app will not overwrite it.");
+            }
+            contact = {
+                mediaType: "PHONE",
+                type: slotType,
+                extension: normalizedExtension,
+                integration: phoneIntegration()
+            };
+            contacts.push(contact);
+            return contacts;
+        }
+
+        contact.mediaType = "PHONE";
+        contact.extension = normalizedExtension;
+        contact.integration = phoneIntegration();
+        delete contact.address;
+        delete contact.value;
+        delete contact.phoneNumber;
+        delete contact.extensionNumber;
+        delete contact.countryCode;
+        delete contact.country_code;
+        return contacts;
+    }
+
+    function removeDirectRoutingExtensionContacts(entries) {
+        return clone(Array.isArray(entries) ? entries : []).filter((entry) => {
+            return !isDirectRoutingExtensionSlot(entry);
+        });
+    }
+
+    function isUnexpectedDirectRoutingAddress(entry) {
+        return isPhoneEntry(entry)
+            && String(entry?.integration || "").toLowerCase() === phoneIntegration()
+            && Boolean(contactAddress(entry))
+            && entryType(entry) !== "work2";
+    }
+
+    function isUnexpectedDirectRoutingExtensionSlot(entry) {
+        return isPhoneEntry(entry)
+            && String(entry?.integration || "").toLowerCase() === phoneIntegration()
+            && !contactAddress(entry)
+            && !DIRECT_ROUTING_EXTENSION_CONTACT_TYPES.includes(String(entry?.type || "").toUpperCase());
+    }
+
+    function assertDirectRoutingContactShape(entries) {
+        const contacts = Array.isArray(entries) ? entries : [];
+        if (contacts.some(isUnexpectedDirectRoutingAddress)
+            || contacts.some(isUnexpectedDirectRoutingExtensionSlot)) {
+            throw new Error("The user has a Direct Routing contact outside the managed WORK2 DID and reserved extension slots. Resolve that profile manually before changing the DID.");
+        }
+    }
+
+    function sanitizeUserAddresses(entries) {
+        return (Array.isArray(entries) ? entries : [])
+            .map((entry) => {
+                const sanitized = {};
+                USER_ADDRESS_WRITABLE_FIELDS.forEach((field) => {
+                    if (entry?.[field] !== undefined
+                        && entry[field] !== null
+                        && entry[field] !== "") {
+                        sanitized[field] = clone(entry[field]);
+                    }
+                });
+                return sanitized;
+            })
+            .filter((entry) => Object.keys(entry).length);
+    }
+
+    function collectUserPhoneContacts(user) {
+        const contacts = [];
+        const addContacts = (entries, source) => {
+            (Array.isArray(entries) ? entries : []).forEach((entry) => {
+                if (!isPhoneEntry(entry)) return;
+                const extension = contactExtension(entry);
+                const display = String(entry?.display || "").trim();
+                contacts.push({
+                    source,
+                    type: String(entry?.type || "PHONE").toUpperCase(),
+                    address: contactAddress(entry) || (display && display !== extension ? display : ""),
+                    extension,
+                    integration: String(entry?.integration || "").trim()
+                });
+            });
+        };
+        addContacts(user?.addresses, "Profile");
+        addContacts(user?.primaryContactInfo, "Primary");
+        return contacts;
+    }
+
+    function phoneContactText(contact) {
+        return [
+            contact?.source,
+            contact?.type,
+            contact?.address,
+            contact?.extension ? `Ext ${contact.extension}` : "",
+            contact?.integration
+        ].filter(Boolean).join(" ");
     }
 
     function isDirectRoutingDidContact(entry) {
         return isPhoneEntry(entry)
+            && String(entry?.integration || "").toLowerCase() === phoneIntegration()
             && entryType(entry) === "work2"
-            && String(entry?.integration || "").toLowerCase() === "directrouting";
+            && Boolean(contactAddress(entry));
     }
 
     function findDirectRoutingDidContact(entries) {
-        return entries.find(isDirectRoutingDidContact) || null;
+        return (Array.isArray(entries) ? entries : []).find(isDirectRoutingDidContact) || null;
     }
 
     function hasDirectRoutingDid(user, phone) {
@@ -2181,23 +2554,24 @@
         });
     }
 
-    function hasExactlyCanonicalDirectRoutingDid(user, phone, countryCode) {
+    function hasExactlyCanonicalDirectRoutingDid(user, phone, extension, countryCode) {
         const directRoutingAddresses = (Array.isArray(user?.addresses) ? user.addresses : [])
-            .filter(isDirectRoutingPhoneContact);
+            .filter(isDirectRoutingDidContact);
         return directRoutingAddresses.length === 1
-            && isCanonicalDirectRoutingDidContact(directRoutingAddresses[0], phone, countryCode);
+            && isCanonicalDirectRoutingDidContact(directRoutingAddresses[0], phone, countryCode)
+            && hasDirectRoutingExtensionContact(user, extension);
     }
 
     function isDirectRoutingPhoneContact(entry) {
-        return isPhoneEntry(entry)
-            && String(entry?.integration || "").toLowerCase() === phoneIntegration();
+        return isDirectRoutingDidContact(entry);
     }
 
     function isCanonicalDirectRoutingDidContact(entry, phone, countryCode) {
         return isDirectRoutingDidContact(entry)
+            && entryType(entry) === "work2"
             && samePhone(contactAddress(entry), phone)
-            && normalizeCountryCode(entry?.countryCode ?? entry?.country_code) === normalizeCountryCode(countryCode)
-            && String(entry?.display || "").trim() === formatPhoneDisplay(phone);
+            && !contactExtension(entry)
+            && normalizeCountryCode(entry?.countryCode ?? entry?.country_code) === normalizeCountryCode(countryCode);
     }
 
     function makeDirectRoutingDidContact(phone, countryCode) {
@@ -2285,6 +2659,11 @@
         return extension.length <= 32 && !/[\r\n]/.test(extension);
     }
 
+    function isConfiguredExtension(value) {
+        const extension = String(value ?? "").trim();
+        return Boolean(extension) && isValidInventoryExtension(extension);
+    }
+
     function applyDirectRoutingDidFields(entry, phone) {
         const normalizedPhone = String(phone || "").trim();
         entry.address = normalizedPhone;
@@ -2293,6 +2672,8 @@
         entry.type = "WORK2";
         entry.countryCode = phoneCountryCode();
         entry.integration = phoneIntegration();
+        // Genesys Contact defines extension as mutually exclusive with address.
+        // The paired extension is stored in the app-managed extension contact.
         delete entry.extension;
         delete entry.extensionNumber;
         delete entry.media_type;
@@ -2464,6 +2845,22 @@
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
+    async function mapWithConcurrency(items, limit, mapper) {
+        const values = Array.isArray(items) ? items : [];
+        const results = new Array(values.length);
+        let nextIndex = 0;
+        const workerCount = Math.min(Math.max(Number(limit) || 1, 1), values.length);
+        const workers = Array.from({ length: workerCount }, async () => {
+            while (nextIndex < values.length) {
+                const index = nextIndex;
+                nextIndex += 1;
+                results[index] = await mapper(values[index], index);
+            }
+        });
+        await Promise.all(workers);
+        return results;
+    }
+
     function titleCase(value) {
         return String(value || "").toLowerCase().replace(/(^|_|\s)\w/g, (match) => match.toUpperCase().replace("_", " "));
     }
@@ -2543,7 +2940,7 @@
     }
 
     function mockUser(id, name, email, divisionId, divisionName, didPhone, extension, version) {
-        return {
+        const user = {
             id,
             name,
             email,
@@ -2552,7 +2949,6 @@
             version,
             addresses: [
                 { mediaType: "EMAIL", type: "WORK", address: email },
-                { display: extension, mediaType: "PHONE", type: "WORK", extension },
                 {
                     address: didPhone,
                     display: formatPhoneDisplay(didPhone),
@@ -2560,12 +2956,45 @@
                     type: "WORK2",
                     countryCode: "US",
                     integration: "directrouting"
+                },
+                {
+                    mediaType: "PHONE",
+                    type: directRoutingExtensionContactType(),
+                    extension,
+                    integration: "directrouting"
                 }
             ],
             primaryContactInfo: [
-                { mediaType: "EMAIL", type: "WORK", address: email },
-                { display: extension, mediaType: "PHONE", type: "PRIMARY", extension }
+                { mediaType: "EMAIL", type: "WORK", address: email }
             ]
         };
+        // Exercise the dashboard's complete contact display without making
+        // ordinary phones into territory-assignment rows.
+        if (id.endsWith("102")) {
+            user.addresses.push(
+                {
+                    address: "+14155550902",
+                    display: formatPhoneDisplay("+14155550902"),
+                    mediaType: "PHONE",
+                    type: "MOBILE",
+                    countryCode: "US"
+                },
+                { display: "4102-ALT", mediaType: "PHONE", type: "WORK3", extension: "4102-ALT" }
+            );
+            user.primaryContactInfo.push({
+                address: "+14155550903",
+                display: formatPhoneDisplay("+14155550903"),
+                mediaType: "PHONE",
+                type: "MOBILE",
+                countryCode: "US"
+            });
+            user.primaryContactInfo.push({
+                display: "4102-PRIMARY",
+                mediaType: "PHONE",
+                type: "PRIMARY",
+                extension: "4102-PRIMARY"
+            });
+        }
+        return user;
     }
 })();

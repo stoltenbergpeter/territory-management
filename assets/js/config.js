@@ -3,32 +3,41 @@ window.TERRITORY_APP_CONFIG = {
 
     // GitHub Pages is static hosting. This client ID is public by design.
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
-    mockGenesys: false,
+    mockGenesys: true,
     // Production is us_east_1; use us_west_2 for the lab division.
-    genesysRegion: "us_west_2",
-    genesysClientId: "d429dee7-4284-4c12-8700-428b15d710de",
+    genesysRegion: "us_east_1",
+    genesysClientId: "",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",
- callRouteId: "8a25c213-fc7d-420c-b0e2-d5f57142b5c8",
+
+    // A dedicated, otherwise-unused PHONE contact type for the extension half
+    // of a Direct Routing DID/extension pair. The app tags this contact with
+    // integration: "directrouting" and will never overwrite an ordinary
+    // contact that occupies the configured slot.
+    directRoutingExtensionContactType: "WORK4",
+
+    // The Architect Call Route (IVR) that should receive new Direct Routing
+    // DIDs. Leave this blank until the production Call Route ID is known; the
+    // live Settings workflow requires a valid ID before making a change.
+    callRouteId: "",
     // Used only when mockGenesys is true, so the live default above cannot
     // accidentally point at a sample resource.
     mockCallRouteId: "00000000-0000-4000-8000-000000000001",
 
-
-    defaultDivisionId: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13",
+    defaultDivisionId: "sales-west",
     allowedDivisions: [
-    { id: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13", name: "Home" },
-         { id: "4c02e0f2-ce73-4a38-9dfa-e7b896762ebc", name: "GSS" },
-         { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" }
+        { id: "sales-west", name: "Sales West" },
+        { id: "sales-east", name: "Sales East" },
+        { id: "enterprise", name: "Enterprise Accounts" }
     ],
 
     // Optional DID inventory. These numbers remain visible as territory rows
-    // even when unassigned. `extension` is only a display fallback; assigning a
-    // DID preserves the selected user's existing PHONE/WORK extension. Export
-    // browser-local additions from Settings and merge them here to share them.
+    // even when unassigned. Each DID should include its paired `extension`;
+    // assigning it writes separate, tagged DID and extension profile contacts.
+    // Export browser-local additions from Settings and merge them here to share them.
     territoryPhoneNumbers: [
-        { phone: "+19164631708", extension: "1151708", divisionId: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", divisionName: "Sales" },
+        { phone: "+14155550101", extension: "4101", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550102", extension: "4102", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550103", extension: "4103", divisionId: "sales-west", divisionName: "Sales West" },
         { phone: "+14155550104", extension: "4104", divisionId: "sales-west", divisionName: "Sales West" },

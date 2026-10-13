@@ -103,7 +103,7 @@
                         <thead>
                         <tr>
                             <th>Territory Phone</th>
-                            <th>Primary Extension</th>
+                            <th>DID Extension</th>
                             <th>Assigned User</th>
                             <th>Genesys User ID</th>
                             <th>Division</th>
@@ -126,6 +126,30 @@
                         <button class="btn btn-outline-secondary btn-sm" id="usersPrevButton" type="button"><i class="bi bi-chevron-left"></i></button>
                         <button class="btn btn-outline-secondary btn-sm" id="usersNextButton" type="button"><i class="bi bi-chevron-right"></i></button>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card app-card mt-4">
+            <div class="card-body p-0">
+                <div class="p-3 border-bottom">
+                    <h2 class="h5 mb-1">Loaded User Phone Contacts</h2>
+                    <p class="text-muted small mb-0">All profile and primary phone contacts for users in the selected division, including ordinary, mobile, and Direct Routing numbers.</p>
+                </div>
+                <div class="table-responsive table-wrap">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                        <tr>
+                            <th>User</th>
+                            <th>Genesys User ID</th>
+                            <th>Phone Contacts and Extensions</th>
+                            <th>Status</th>
+                        </tr>
+                        </thead>
+                        <tbody id="userPhoneContactsBody">
+                        <tr><td colspan="4" class="text-center py-4 text-muted">Sign in to load user phone contacts.</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </section>
@@ -255,11 +279,11 @@
             <div class="card-body">
                 <div>
                     <h2 class="h5 mb-1">Add Direct Routing Phone</h2>
-                    <p class="text-muted mb-0">Attach an already-provisioned DID to one Genesys user and add it to an Architect Call Route.</p>
+                    <p class="text-muted mb-0">Attach an already-provisioned DID and its extension to one Genesys user, then add only the DID to an Architect Call Route.</p>
                 </div>
 
                 <div class="alert alert-warning small mt-3 mb-3" role="note">
-                    Outside Mock Mode, this is a live Genesys change. The app does not check DID pools. It updates the user's Direct Routing contact first, then appends the DID to the Call Route. An ordinary phone contact using the same DID is converted rather than duplicated. If the Call Route update fails, the user change remains in place and must be retried or resolved manually.
+                    Outside Mock Mode, this is a live Genesys change. The app does not check DID pools. It adds the user's tagged DID-and-extension profile contacts first, then appends only the DID to the Call Route. Other profile phone contacts remain visible and are preserved. If the Call Route update fails, the user change remains in place and must be retried or resolved manually.
                 </div>
 
                 <form class="row g-3 align-items-end" id="directRoutingPhoneForm">
@@ -274,6 +298,11 @@
                         <input class="form-control" id="directRoutingPhoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="+19165551234" pattern="\+[1-9][0-9]{1,14}" required>
                         <div class="form-text">Country code: <span id="directRoutingCountryCode"></span></div>
                     </div>
+                    <div class="col-12 col-md-6 col-xl-2">
+                        <label class="form-label" for="directRoutingExtensionInput">Extension</label>
+                        <input class="form-control" id="directRoutingExtensionInput" type="text" maxlength="32" autocomplete="off" placeholder="4567" required>
+                        <div class="form-text">Added as the DID's tagged extension contact.</div>
+                    </div>
                     <div class="col-12 col-md-6 col-xl-3">
                         <label class="form-label" for="directRoutingCallRouteId">Call Route ID</label>
                         <input class="form-control" id="directRoutingCallRouteId" type="text" autocomplete="off" placeholder="Architect Call Route UUID" required>
@@ -282,10 +311,10 @@
                     <div class="col-12 col-xl-2 d-grid">
                         <button class="btn btn-primary" id="addDirectRoutingPhoneButton" type="submit"><i class="bi bi-person-plus"></i> Add Phone</button>
                     </div>
-                    <div class="col-12">
+                    <div class="col-12 col-xl-10">
                         <div class="form-check">
                             <input class="form-check-input" id="replaceExistingDirectRoutingPhone" type="checkbox">
-                            <label class="form-check-label" for="replaceExistingDirectRoutingPhone">Replace a different existing Direct Routing phone on this user</label>
+                            <label class="form-check-label" for="replaceExistingDirectRoutingPhone">Replace a different existing Direct Routing DID on this user</label>
                         </div>
                     </div>
                 </form>
@@ -303,7 +332,7 @@
                 </div>
 
                 <div class="alert alert-warning small mt-3 mb-3" role="note">
-                    This does not create a Genesys phone number or extension. The display extension is only shown while the territory DID is unassigned; assigning a DID preserves the selected user's existing Genesys extension.
+                    This does not create a Genesys phone number until it is assigned. Each territory DID must have an extension; assigning it adds that DID-and-extension pair to the selected user's profile while preserving other phone contacts.
                 </div>
 
                 <form class="row g-3 align-items-end" id="territoryPhoneForm">
@@ -316,8 +345,8 @@
                         <input class="form-control" id="territoryPhoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="+19165551234" pattern="\+[1-9][0-9]{1,14}" required>
                     </div>
                     <div class="col-12 col-lg-2">
-                        <label class="form-label" for="territoryExtensionInput">Display Extension <span class="text-muted fw-normal">(optional)</span></label>
-                        <input class="form-control" id="territoryExtensionInput" type="text" maxlength="32" autocomplete="off" placeholder="4567">
+                        <label class="form-label" for="territoryExtensionInput">Extension</label>
+                        <input class="form-control" id="territoryExtensionInput" type="text" maxlength="32" autocomplete="off" placeholder="4567" required>
                     </div>
                     <div class="col-12 col-lg-2 d-grid">
                         <button class="btn btn-primary" type="submit"><i class="bi bi-plus-lg"></i> Add Territory Phone</button>

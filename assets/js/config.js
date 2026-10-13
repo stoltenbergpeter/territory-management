@@ -5,20 +5,22 @@ window.TERRITORY_APP_CONFIG = {
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
     mockGenesys: false,
     // Production is us_east_1; use us_west_2 for the lab division.
-    genesysRegion: "us_east_1",
+    genesysRegion: "us_west_2",
     genesysClientId: "d429dee7-4284-4c12-8700-428b15d710de",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",
- callRouteId: "37213542-5b73-464b-a612-938156eb03e2",
+ callRouteId: "8a25c213-fc7d-420c-b0e2-d5f57142b5c8",
     // Used only when mockGenesys is true, so the live default above cannot
     // accidentally point at a sample resource.
     mockCallRouteId: "00000000-0000-4000-8000-000000000001",
 
 
-    defaultDivisionId: "1efa8ca7-94e8-46ac-8100-85cdd0158c56",
+    defaultDivisionId: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13",
     allowedDivisions: [
-    { id: "1efa8ca7-94e8-46ac-8100-85cdd0158c56", name: "Sales" }
+    { id: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13", name: "Home" },
+         { id: "4c02e0f2-ce73-4a38-9dfa-e7b896762ebc", name: "GSS" },
+         { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" }
     ],
 
     // Optional DID inventory. These numbers remain visible as territory rows

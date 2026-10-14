@@ -3,10 +3,10 @@ window.TERRITORY_APP_CONFIG = {
 
     // GitHub Pages is static hosting. This client ID is public by design.
     // Create a Genesys OAuth client with Authorization Code Grant with PKCE.
-    mockGenesys: true,
+    mockGenesys: false,
     // Production is us_east_1; use us_west_2 for the lab division.
-    genesysRegion: "us_east_1",
-    genesysClientId: "",
+    genesysRegion: "us_west_2",
+    genesysClientId: "dfaf89d8-5e47-492a-b0d2-0ac265e53f70",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",
@@ -20,16 +20,15 @@ window.TERRITORY_APP_CONFIG = {
     // The Architect Call Route (IVR) that should receive new Direct Routing
     // DIDs. Leave this blank until the production Call Route ID is known; the
     // live Settings workflow requires a valid ID before making a change.
-    callRouteId: "",
+    callRouteId: "8a25c213-fc7d-420c-b0e2-d5f57142b5c8",
     // Used only when mockGenesys is true, so the live default above cannot
     // accidentally point at a sample resource.
     mockCallRouteId: "00000000-0000-4000-8000-000000000001",
 
     defaultDivisionId: "sales-west",
     allowedDivisions: [
-        { id: "sales-west", name: "Sales West" },
-        { id: "sales-east", name: "Sales East" },
-        { id: "enterprise", name: "Enterprise Accounts" }
+        { id: "ec3e6f92-8bae-420a-b8fc-cb575bc6cd13", name: "Home" },
+        { id: "08406715-fa1b-48a9-b48e-4079ddca5223", name: "Putnam" }
     ],
 
     // Optional DID inventory. These numbers remain visible as territory rows

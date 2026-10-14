@@ -52,7 +52,10 @@
         "countryCode",
         "integration"
     ];
-    const DIRECT_ROUTING_EXTENSION_CONTACT_TYPES = ["WORK3", "WORK4", "OTHER"];
+    // WORK is a valid Genesys PHONE contact type.  It is safe to use here
+    // when it is reserved for the app-managed, extension-only Direct Routing
+    // contact; the occupied-slot check below still protects ordinary contacts.
+    const DIRECT_ROUTING_EXTENSION_CONTACT_TYPES = ["WORK", "WORK3", "WORK4", "OTHER"];
     const MAX_MUTATION_ATTEMPTS = 3;
     const MAX_VERIFICATION_ATTEMPTS = 4;
     const VERIFICATION_RETRY_DELAY_MS = 250;
@@ -2381,7 +2384,7 @@
     function directRoutingExtensionContactType() {
         const type = String(CONFIG.directRoutingExtensionContactType || "WORK4").trim().toUpperCase();
         if (!DIRECT_ROUTING_EXTENSION_CONTACT_TYPES.includes(type)) {
-            throw new Error("Configure directRoutingExtensionContactType as WORK3, WORK4, or OTHER before assigning Direct Routing extensions.");
+            throw new Error("Configure directRoutingExtensionContactType as WORK, WORK3, WORK4, or OTHER before assigning Direct Routing extensions.");
         }
         return type;
     }

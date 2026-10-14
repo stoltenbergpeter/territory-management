@@ -6,7 +6,7 @@ window.TERRITORY_APP_CONFIG = {
     mockGenesys: false,
     // Production is us_east_1; use us_west_2 for the lab division.
     genesysRegion: "us_west_2",
-    genesysClientId: "dfaf89d8-5e47-492a-b0d2-0ac265e53f70",
+    genesysClientId: "409225b8-66a3-407c-92ad-fa386bad3e79",
     redirectUri: `${window.location.origin}${window.location.pathname}`,
     oauthScope: "",
     phoneCountryCode: "US",

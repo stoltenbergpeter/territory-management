@@ -15,7 +15,7 @@ window.TERRITORY_APP_CONFIG = {
     // of a Direct Routing DID/extension pair. The app tags this contact with
     // integration: "directrouting" and will never overwrite an ordinary
     // contact that occupies the configured slot.
-    directRoutingExtensionContactType: "WORK4",
+    directRoutingExtensionContactType: "WORK",
 
     // The Architect Call Route (IVR) that should receive new Direct Routing
     // DIDs. Leave this blank until the production Call Route ID is known; the
